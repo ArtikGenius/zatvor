@@ -77,6 +77,19 @@ func TestScanFlagsPrivateKeys(t *testing.T) {
 	wantRules(t, Scan("c.json", []byte(`"privateKey": "`+key+`"`), AllowList{key: {}}))
 }
 
+func TestScanFlagsINIKeys(t *testing.T) {
+	key := "uJ3kQ0Zr5y1XbL8mP2nV7sT4wA9cE6hG1dF0iK3oM5q" + "="
+	for _, name := range []string{"PrivateKey", "presharedkey", "HEADERPROTECTIONKEY"} {
+		line := []byte(name + " = " + key + "\r\n")
+		wantRules(t, Scan("a.conf", line, nil), "ini-key")
+		wantRules(t, Scan("a.conf", line, AllowList{key: {}}))
+	}
+	// 43-char value without padding is also flagged.
+	wantRules(t, Scan("a.conf", []byte("PrivateKey = "+key[:43]), nil), "ini-key")
+	// PublicKey is not secret.
+	wantRules(t, Scan("a.conf", []byte("PublicKey = "+key), nil))
+}
+
 func TestScanReportsLineNumbers(t *testing.T) {
 	got := Scan("x.md", []byte("ok\nok\nhttps://panel.real-"+"host.ru/sub/tok\n"), nil)
 	if len(got) != 1 || got[0].Line != 3 {

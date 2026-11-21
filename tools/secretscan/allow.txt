@@ -15,3 +15,8 @@ panel.real-host.ru
 # happ-routing.json and xray-hy2-dns-legacy.json fixtures. Public, not secrets.
 213.24.64.175
 213.24.64.181
+
+# generated test keys for amneziawg.conf fixture, never used anywhere
+R7P0Q/Fb88jse9Cj3bJefKA1huFoA78EJCN7bX9GF0g=
+23pD0I1WHn4wH0Nv3zfR9n1f3V/P3zqY4c16aLejkmE=
+xdnWs6bS+g+cHkNi6xBIImJSJNBZXUoHy6DwPZG52Qk=

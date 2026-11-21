@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "amneziawg.conf fixture holds freshly generated test keys that were never used anywhere"
+paths = ['''^testdata/fixtures/amneziawg\.conf$''']
