@@ -1,4 +1,4 @@
-package main
+package xraybin
 
 import (
 	"archive/zip"
@@ -72,7 +72,7 @@ func TestFetchVerifiesPinnedHash(t *testing.T) {
 	srv := serve("Xray-linux-64.zip", z, sum(z))
 	defer srv.Close()
 	dest := t.TempDir()
-	p, err := FetchWithPin(context.Background(), srv.Client(), srv.URL+"/", testPin("Xray-linux-64.zip", sum(z)), "linux-amd64", dest)
+	p, err := Fetch(context.Background(), srv.Client(), testPin("Xray-linux-64.zip", sum(z)), srv.URL+"/", "linux-amd64", dest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestFetchExtractsExeOnWindows(t *testing.T) {
 	defer srv.Close()
 	pin := Pin{Assets: map[string]Asset{"windows-amd64": {Zip: "Xray-windows-64.zip", SHA256: sum(z)}}}
 	dest := t.TempDir()
-	p, err := FetchWithPin(context.Background(), srv.Client(), srv.URL, pin, "windows-amd64", dest)
+	p, err := Fetch(context.Background(), srv.Client(), pin, srv.URL, "windows-amd64", dest)
 	if err != nil || filepath.Base(p) != "xray.exe" {
 		t.Fatalf("p=%q err=%v", p, err)
 	}
@@ -111,7 +111,7 @@ func TestFetchRejectsHashMismatch(t *testing.T) {
 	srv := serve("Xray-linux-64.zip", bad, sum(z))
 	defer srv.Close()
 	dest := t.TempDir()
-	_, err := FetchWithPin(context.Background(), srv.Client(), srv.URL, testPin("Xray-linux-64.zip", sum(z)), "linux-amd64", dest)
+	_, err := Fetch(context.Background(), srv.Client(), testPin("Xray-linux-64.zip", sum(z)), srv.URL, "linux-amd64", dest)
 	if err == nil || !strings.Contains(err.Error(), "Xray-linux-64.zip") {
 		t.Fatalf("err = %v", err)
 	}
@@ -123,7 +123,7 @@ func TestFetchRejectsDgstDisagreement(t *testing.T) {
 	srv := serve("Xray-linux-64.zip", z, strings.Repeat("ab", 32))
 	defer srv.Close()
 	dest := t.TempDir()
-	_, err := FetchWithPin(context.Background(), srv.Client(), srv.URL, testPin("Xray-linux-64.zip", sum(z)), "linux-amd64", dest)
+	_, err := Fetch(context.Background(), srv.Client(), testPin("Xray-linux-64.zip", sum(z)), srv.URL, "linux-amd64", dest)
 	if err == nil || !strings.Contains(err.Error(), "dgst") {
 		t.Fatalf("err = %v", err)
 	}
@@ -147,7 +147,7 @@ func TestFetchLeavesNoPartialFile(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	dest := t.TempDir()
-	_, err := FetchWithPin(context.Background(), srv.Client(), srv.URL, testPin("Xray-linux-64.zip", sum(z)), "linux-amd64", dest)
+	_, err := Fetch(context.Background(), srv.Client(), testPin("Xray-linux-64.zip", sum(z)), srv.URL, "linux-amd64", dest)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -155,8 +155,52 @@ func TestFetchLeavesNoPartialFile(t *testing.T) {
 }
 
 func TestFetchUnknownPlatform(t *testing.T) {
-	_, err := FetchWithPin(context.Background(), http.DefaultClient, "http://x/", testPin("a.zip", "00"), "plan9-386", t.TempDir())
+	_, err := Fetch(context.Background(), http.DefaultClient, testPin("a.zip", "00"), "http://x/", "plan9-386", t.TempDir())
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestFetchRejectsZipSlipAndNestedEntries(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, n := range []string{"../xray", "sub/xray"} {
+		w, _ := zw.Create(n)
+		w.Write([]byte("evil"))
+	}
+	zw.Close()
+	z := buf.Bytes()
+	srv := serve("Xray-linux-64.zip", z, sum(z))
+	defer srv.Close()
+	parent := t.TempDir()
+	dest := filepath.Join(parent, "dest")
+	_, err := Fetch(context.Background(), srv.Client(), testPin("Xray-linux-64.zip", sum(z)), srv.URL, "linux-amd64", dest)
+	if err == nil || !strings.Contains(err.Error(), "not found in archive") {
+		t.Fatalf("err = %v", err)
+	}
+	noXray(t, dest)
+	if _, err := os.Stat(filepath.Join(parent, "xray")); err == nil {
+		t.Fatal("file written outside destDir")
+	}
+}
+
+func TestFetchFailureLeavesNoDestDir(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "never")
+	_, err := Fetch(context.Background(), http.DefaultClient, testPin("a.zip", "00"), "http://x/", "plan9-386", dest)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if _, err := os.Stat(dest); err == nil {
+		t.Fatal("destDir created despite invalid platform")
+	}
+}
+
+func TestRepoPinPath(t *testing.T) {
+	p, err := RepoPinPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPin(p); err != nil {
+		t.Fatal(err)
 	}
 }

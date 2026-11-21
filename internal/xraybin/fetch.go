@@ -1,4 +1,5 @@
-package main
+// Package xraybin fetches and verifies the pinned Xray-core release.
+package xraybin
 
 import (
 	"archive/zip"
@@ -6,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,35 +16,7 @@ import (
 	"strings"
 )
 
-// Asset is one pinned release archive.
-type Asset struct {
-	Zip    string `json:"zip"`
-	SHA256 string `json:"sha256"`
-}
-
-// Pin is the content of third_party/xray/pin.json.
-type Pin struct {
-	Version string           `json:"version"`
-	Assets  map[string]Asset `json:"assets"`
-}
-
-// PinFile is the default location of the pin, relative to the repo root.
-var PinFile = filepath.FromSlash("third_party/xray/pin.json")
-
 const maxZipBytes = 200 << 20
-
-// LoadPin reads and parses a pin file.
-func LoadPin(file string) (Pin, error) {
-	var p Pin
-	b, err := os.ReadFile(file)
-	if err != nil {
-		return p, err
-	}
-	if err := json.Unmarshal(b, &p); err != nil {
-		return p, fmt.Errorf("parse %s: %w", file, err)
-	}
-	return p, nil
-}
 
 // DefaultBaseURL returns the GitHub release download base for a pinned version.
 func DefaultBaseURL(version string) string {
@@ -52,21 +24,13 @@ func DefaultBaseURL(version string) string {
 }
 
 // Fetch downloads the pinned Xray archive for platform, verifies it, and
-// extracts the xray binary into destDir. A baseURL of "" uses GitHub.
-func Fetch(ctx context.Context, client *http.Client, baseURL, platform, destDir string) (string, error) {
-	pin, err := LoadPin(PinFile)
-	if err != nil {
-		return "", err
-	}
+// extracts the xray binary into destDir. The archive must match both the
+// pinned SHA-256 and the SHA2-256 line of the release .dgst file. A baseURL
+// of "" uses the GitHub release for pin.Version.
+func Fetch(ctx context.Context, client *http.Client, pin Pin, baseURL, platform, destDir string) (string, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL(pin.Version)
 	}
-	return FetchWithPin(ctx, client, baseURL, pin, platform, destDir)
-}
-
-// FetchWithPin is Fetch with an explicit pin. The archive must match both the
-// pinned SHA-256 and the SHA2-256 line of the release .dgst file.
-func FetchWithPin(ctx context.Context, client *http.Client, baseURL string, pin Pin, platform, destDir string) (string, error) {
 	asset, ok := pin.Assets[platform]
 	if !ok {
 		return "", fmt.Errorf("no pinned asset for platform %q", platform)
@@ -74,10 +38,6 @@ func FetchWithPin(ctx context.Context, client *http.Client, baseURL string, pin 
 	if !strings.HasSuffix(baseURL, "/") {
 		baseURL += "/"
 	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return "", err
-	}
-
 	dgst, err := fetchDgst(ctx, client, baseURL+asset.Zip+".dgst")
 	if err != nil {
 		return "", fmt.Errorf("%s: dgst: %w", asset.Zip, err)
@@ -86,6 +46,9 @@ func FetchWithPin(ctx context.Context, client *http.Client, baseURL string, pin 
 		return "", fmt.Errorf("%s: dgst SHA2-256 %s disagrees with pin %s", asset.Zip, dgst, asset.SHA256)
 	}
 
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return "", err
+	}
 	tmpZip, err := os.CreateTemp(destDir, ".tmp-zip-*")
 	if err != nil {
 		return "", err
