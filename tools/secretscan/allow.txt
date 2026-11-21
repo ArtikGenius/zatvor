@@ -3,3 +3,15 @@
 # Placeholder hostname used as the "real-looking" example in the plan's
 # secretscan test description (docs/superpowers/plans/...); not a real panel.
 panel.real-host.ru
+
+# Public DNS resolver addresses in testdata/fixtures (not secrets).
+# 1.1.1.1 / 1.0.0.1: Cloudflare; 8.8.8.8: Google; 77.88.8.8: Yandex DNS.
+1.1.1.1
+1.0.0.1
+8.8.8.8
+77.88.8.8
+
+# Public A records of the nalog.ru tax-service hosts, listed in DnsHosts of
+# happ-routing.json and xray-hy2-dns-legacy.json fixtures. Public, not secrets.
+213.24.64.175
+213.24.64.181
