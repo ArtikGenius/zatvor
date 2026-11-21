@@ -61,7 +61,7 @@ agrees with them. Raw output: `results/<framework>-<os>-run<id>.json`. Runners: 
 | rAF probe, max of 19 (excluding first) ms | 6.2 / 5.6 | 93.5 / 94.0 | 16.0 / 29.8 | 14.1 / 24.7 |
 | First show after start, ms (screen / rAF) | 41.3, 35.7 / 31.8, 39.8 | 35.2, 53.9 / 16.6, 25.2 | rAF 1076 / 255 (run 1: 810) | rAF 88.5 / 767 (run 1: 1289) |
 | show() call returns, ms | 0.0 (async) | 25–83 (blocks) | 0.0 | 0.1–2.6 |
-| Hidden: private working set / phys_footprint MB (≤ 120) | **58.7 / 58.3** | **61.8 / 64.5** | **57.2 / 63.9** | **79.8 / 61.2** |
+| Hidden: private working set (Win, external, 50 s; not in metrics.json) / phys_footprint (mac, in-app, 60 s) MB (≤ 120) | **58.7 / 58.3** | **61.8 / 64.5** | **57.2 / 63.9** | **79.8 / 61.2** |
 | Hidden: private bytes (commit) MB | 93.5 / 91.0 | 138.5 / 141.2 | n/a | n/a |
 | Hidden: working-set / RSS sum MB (upper bound) | 292.0 / 290.0 | 294.2 / 298.7 | 193.3 / 176.3 | 246.3 / 202.1 |
 | Processes (hidden) | exe + 6 msedgewebview2.exe (all by PPID) | exe + 6 msedgewebview2.exe | app + WebContent, Networking, 2× MTLCompilerService (by responsible PID) | app + WebContent, Networking, GPU, 2× MTLCompilerService, audio SandboxHelper |
@@ -71,17 +71,28 @@ agrees with them. Raw output: `results/<framework>-<os>-run<id>.json`. Runners: 
 | Placement under tray / notch | not measured: no tray click on runners | same | Artur | Artur |
 
 Reading the numbers:
-- Both pass the open budget by a wide margin on Windows. The pixel watcher cannot tell the two apart within
-  its 20 ms resolution. Inside the app, Tauri's show() is asynchronous and its frame arrives in about 5 ms.
-  Wails' `Show()` blocks the caller for 25–83 ms (InvokeSync onto the UI thread plus WebView2 `Show`) and
-  its tail is longer (max about 94 ms).
-- On macOS the **first** show after start ranged from 0.09 to 1.3 s for both frameworks: a cold WKWebView,
-  with Metal shaders compiled by MTLCompilerService. That breaks the 150 ms budget for the first open. Later
-  opens take 5–30 ms.
-- Hidden memory measured the way users see it (Task Manager / Activity Monitor) is 57–80 MB for both, under
-  the 120 MB target. The raw working-set sum (about 290 MB on Windows) fails it, but it counts shared
-  WebView2 pages once per process.
-- Tauri's binary is about a third of Wails' size on both OSes.
+- **Open time: no difference within noise.** Both pass the budget by a wide margin on Windows, and the pixel
+  watcher's medians overlap within its 20 ms resolution. The Windows first open was slightly faster with
+  Wails. The rAF medians (Tauri about 5 ms, Wails about 45–58 ms on Windows) are an artefact of the method:
+  - Wails' `Show()` blocks inside the timed interval (InvokeSync onto the UI thread plus WebView2 `Show`),
+    while Tauri's show() returns at once;
+  - the two report back over different transports;
+  - on Windows the probe fires before the pixels appear.
+
+  Do not use them to compare the frameworks.
+- On macOS the **first** show after start ranged from 0.09 to 1.3 s for both frameworks, erratically from
+  run to run: a cold WKWebView, with Metal shaders compiled by MTLCompilerService. That breaks the 150 ms
+  budget for the first open. Later opens take 5–30 ms.
+- **Memory metric for the 120 MB budget:** the private working set (Windows, Task Manager "Memory") and
+  phys_footprint (macOS, Activity Monitor "Memory"). These count each page once, and they are what users
+  see. On that reading both pass, at 57–80 MB, and macOS is a tie.
+  - The working-set sum (about 290 MB on Windows) counts shared WebView2 pages again for each process.
+  - Under a commit (private bytes) reading, Tauri's about 91 MB fits and Wails' about 141 MB does not.
+- The Windows private working set is read **externally** at 50 s by `selftest-win.ps1`, while the popup is
+  still hidden, and is saved as `results/*-memory.json` in the CI artifact. It is **not** in metrics.json:
+  the in-app readings there are taken at 60 s.
+- What separates the two clearly: Tauri's binary is about a third of Wails' size on both OSes, and its
+  private bytes on Windows are about 50 MB lower.
 
 ## Checklist for Artur's Mac
 
