@@ -1,0 +1,118 @@
+{
+    "format":  "wix",
+    "runner":  {
+                   "os":  "Microsoft Windows NT 10.0.26100.0",
+                   "ps":  "5.1.26100.33822",
+                   "elevated":  true
+               },
+    "sizeBytes":  {
+                      "v1":  700416,
+                      "v2":  700416
+                  },
+    "payloadBytes":  1746432,
+    "elevation":  {
+                      "summaryWordCount":  2,
+                      "elevationNotRequiredBit":  false,
+                      "properties":  {
+                                         "ALLUSERS":  "1",
+                                         "MSIINSTALLPERUSER":  null,
+                                         "ProductVersion":  "0.0.1",
+                                         "UpgradeCode":  "{F1EE344A-8F54-414D-96AD-5D33B283DC37}",
+                                         "ProductCode":  "{F6058E54-2338-4E4C-9D13-B2C91CD888AE}"
+                                     }
+                  },
+    "silentInstall":  "/i /qn /norestart",
+    "before":  {
+                   "dirExists":  false,
+                   "files":  [
+
+                             ],
+                   "versionTxt":  null,
+                   "exeVersionOut":  null,
+                   "arpEntries":  [
+
+                                  ],
+                   "startMenuLnk":  false,
+                   "hklmSoftwareKey":  false
+               },
+    "installV1":  {
+                      "exitCode":  0,
+                      "seconds":  2.06,
+                      "command":  "C:\\Windows\\System32\\msiexec.exe /i \"D:\\a\\zatvor\\zatvor\\out\\wix\\zatvor-0.0.1.msi\" /qn /norestart /l*v \"D:\\a\\zatvor\\zatvor\\out\\results\\logs-wix\\install-v1.log\""
+                  },
+    "afterV1":  {
+                    "dirExists":  true,
+                    "files":  [
+                                  "VERSION.txt",
+                                  "zatvor.exe"
+                              ],
+                    "versionTxt":  "0.0.1",
+                    "exeVersionOut":  "0.0.0-dev",
+                    "arpEntries":  [
+                                       {
+                                           "Key":  "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{F6058E54-2338-4E4C-9D13-B2C91CD888AE}",
+                                           "DisplayName":  "Zatvor",
+                                           "DisplayVersion":  "0.0.1",
+                                           "InstallLocation":  "",
+                                           "UninstallString":  "MsiExec.exe /I{F6058E54-2338-4E4C-9D13-B2C91CD888AE}",
+                                           "QuietUninstallString":  null,
+                                           "EstimatedSizeKB":  1697
+                                       }
+                                   ],
+                    "startMenuLnk":  true,
+                    "hklmSoftwareKey":  true
+                },
+    "upgradeV2":  {
+                      "exitCode":  0,
+                      "seconds":  1.01,
+                      "command":  "C:\\Windows\\System32\\msiexec.exe /i \"D:\\a\\zatvor\\zatvor\\out\\wix\\zatvor-0.0.2.msi\" /qn /norestart /l*v \"D:\\a\\zatvor\\zatvor\\out\\results\\logs-wix\\install-v2-over-v1.log\""
+                  },
+    "afterV2":  {
+                    "dirExists":  true,
+                    "files":  [
+                                  "VERSION.txt",
+                                  "zatvor.exe"
+                              ],
+                    "versionTxt":  "0.0.2",
+                    "exeVersionOut":  "0.0.0-dev",
+                    "arpEntries":  [
+                                       {
+                                           "Key":  "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{B2A6B53B-B678-4623-97A3-189716701040}",
+                                           "DisplayName":  "Zatvor",
+                                           "DisplayVersion":  "0.0.2",
+                                           "InstallLocation":  "",
+                                           "UninstallString":  "MsiExec.exe /I{B2A6B53B-B678-4623-97A3-189716701040}",
+                                           "QuietUninstallString":  null,
+                                           "EstimatedSizeKB":  1697
+                                       }
+                                   ],
+                    "startMenuLnk":  true,
+                    "hklmSoftwareKey":  true
+                },
+    "upgradeInPlace":  {
+                           "versionTxtIs002":  true,
+                           "arpEntryCount":  1,
+                           "arpVersion":  [
+                                              "0.0.2"
+                                          ]
+                       },
+    "uninstall":  {
+                      "exitCode":  0,
+                      "seconds":  1.02,
+                      "command":  "C:\\Windows\\System32\\msiexec.exe /x {B2A6B53B-B678-4623-97A3-189716701040} /qn /norestart /l*v \"D:\\a\\zatvor\\zatvor\\out\\results\\logs-wix\\uninstall.log\"",
+                      "secondsUntilGone":  0.37
+                  },
+    "leftovers":  {
+                      "dirExists":  false,
+                      "files":  [
+
+                                ],
+                      "versionTxt":  null,
+                      "exeVersionOut":  null,
+                      "arpEntries":  [
+
+                                     ],
+                      "startMenuLnk":  false,
+                      "hklmSoftwareKey":  false
+                  }
+}

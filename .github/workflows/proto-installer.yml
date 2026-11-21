@@ -1,0 +1,189 @@
+name: proto-installer
+
+# Stage 0c, task 10: installer format (Inno Setup 6 vs WiX v5) and the
+# one-line install scripts with Ed25519-signed SHA256SUMS (spec §11, R3.2).
+# Installers are installed and removed only on disposable windows-latest
+# runners; scripts that change the system refuse unless CI=true.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'proto/installer/**'
+      - 'scripts/install/**'
+      - '.github/workflows/proto-installer.yml'
+
+permissions:
+  contents: read
+
+env:
+  PESTER_VERSION: "5.9.0"
+
+jobs:
+  ed25519:
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh] # Windows PowerShell 5.1 and PowerShell 7
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pester ${{ env.PESTER_VERSION }}
+        run: |
+          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION
+          "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition)), Pester $((Get-Module Pester).Version)"
+          $c = New-PesterConfiguration
+          $c.Run.Path = 'scripts/install/tests/Ed25519.Tests.ps1'
+          $c.Run.Exit = $true
+          $c.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $c
+      - name: verify time
+        run: |
+          . ./scripts/install/Ed25519.ps1
+          function hex([string]$h) { $b = New-Object byte[] ($h.Length / 2); for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [Convert]::ToByte($h.Substring(2 * $i, 2), 16) }; , $b }
+          # RFC 8032 section 7.1 TEST 3
+          $pk = hex 'fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025'
+          $m = hex 'af82'
+          $sig = hex '6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a'
+          $ms = foreach ($i in 1..7) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            if (-not (Test-Ed25519Signature -PublicKey $pk -Message $m -Signature $sig)) { throw 'verify failed' }
+            $sw.Stop(); $sw.Elapsed.TotalMilliseconds
+          }
+          $sorted = $ms | Sort-Object
+          "ed25519 verify on PowerShell $($PSVersionTable.PSVersion): first $([math]::Round($ms[0])) ms, median $([math]::Round($sorted[3])) ms, max $([math]::Round($sorted[-1])) ms (7 runs)"
+      - name: install.ps1 embeds Ed25519.ps1 verbatim
+        if: matrix.shell == 'pwsh'
+        run: |
+          $lib = (Get-Content -Raw scripts/install/Ed25519.ps1) -replace "`r`n", "`n"
+          $inst = (Get-Content -Raw scripts/install/install.ps1) -replace "`r`n", "`n"
+          $m = [regex]::Match($inst, '(?s)\n#region Ed25519[^\n]*\n(.*?)#endregion Ed25519\n')
+          if (-not $m.Success -or $m.Groups[1].Value -ne $lib) { throw 'install.ps1 #region Ed25519 differs from Ed25519.ps1: copy it again' }
+          'embedded copy is identical'
+
+  install-sh:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: tests
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            # The key for this run is made with Homebrew's OpenSSL 3; the
+            # default /usr/bin/openssl (LibreSSL) is tested separately below.
+            export SIGNER_OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+          fi
+          "${SIGNER_OPENSSL:-openssl}" version
+          sh scripts/install/tests/install-sh-test.sh
+      - name: /usr/bin/openssl as the default
+        run: |
+          echo "/usr/bin/openssl: $(/usr/bin/openssl version)"
+          set +e
+          mkdir -p "$RUNNER_TEMP/empty"
+          OPENSSL=/usr/bin/openssl sh scripts/install/install.sh --source "$RUNNER_TEMP/empty" --file x.tar.gz
+          echo "install.sh exit $? with OPENSSL=/usr/bin/openssl (3 = refused: no Ed25519; 1 = Ed25519 works, the empty source fails later)"
+
+  installers:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      INNO_VERSION: "6.7.1"
+      WIX_VERSION: "5.0.2"
+      DOTNET_ROLL_FORWARD: Major # wix 5 targets net6; the runner has newer runtimes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: dummy zatvor.exe (cmd/zatvord, windows-amd64)
+        shell: bash
+        run: |
+          for v in 0.0.1 0.0.2; do
+            mkdir -p out/src-$v
+            GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o out/src-$v/zatvor.exe ./cmd/zatvord
+            printf '%s\n' "$v" > out/src-$v/VERSION.txt
+          done
+          ls -l out/src-0.0.1
+      - name: Inno Setup ${{ env.INNO_VERSION }}
+        shell: pwsh
+        run: |
+          # ISCC.exe has no version resource (it reads 0.0.0.0), so pin through
+          # choco (a no-op when the runner image already has this version)
+          # and print the compiler banner.
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          choco install innosetup --version $env:INNO_VERSION -y --no-progress
+          if ($LASTEXITCODE) { throw "choco $LASTEXITCODE" }
+          choco list innosetup --exact
+          (& $iscc 2>&1 | Select-Object -First 1) -join ''
+          $global:LASTEXITCODE = 0
+          "ISCC=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: WiX ${{ env.WIX_VERSION }}
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version $env:WIX_VERSION
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & "$env:USERPROFILE\.dotnet\tools\wix.exe" --version
+      - name: build installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out/inno, out/wix, out/results | Out-Null
+          $t = [ordered]@{}
+          foreach ($v in '0.0.1', '0.0.2') {
+            $src = (Resolve-Path "out/src-$v").Path
+            $t["inno $v"] = (Measure-Command { & $env:ISCC /Q "/DAppVersion=$v" "/DSrcDir=$src" "/O$PWD\out\inno" proto\installer\inno\zatvor.iss; if ($LASTEXITCODE) { throw "ISCC $LASTEXITCODE" } }).TotalSeconds
+            $t["wix $v"] = (Measure-Command { wix build proto\installer\wix\Package.wxs -arch x64 -d "Version=$v" -d "SrcDir=$src" -o "out\wix\zatvor-$v.msi"; if ($LASTEXITCODE) { throw "wix $LASTEXITCODE" } }).TotalSeconds
+          }
+          $t.GetEnumerator() | ForEach-Object { "build {0}: {1:N1} s" -f $_.Key, $_.Value }
+          $t | ConvertTo-Json | Set-Content out/results/build-seconds.json
+          Get-ChildItem out/inno, out/wix -File | Format-Table Name, Length
+      - name: measure Inno (install, upgrade, uninstall)
+        shell: powershell
+        run: proto\installer\Measure.ps1 -Format inno -V1 out\inno\zatvor-setup-0.0.1.exe -V2 out\inno\zatvor-setup-0.0.2.exe -Out out\results\inno.json
+      - name: measure WiX (install, upgrade, uninstall)
+        shell: powershell
+        run: proto\installer\Measure.ps1 -Format wix -V1 out\wix\zatvor-0.0.1.msi -V2 out\wix\zatvor-0.0.2.msi -Out out\results\wix.json
+      - name: signed test release (throwaway key, this run only)
+        shell: bash
+        run: |
+          openssl version
+          k="$RUNNER_TEMP/release-key.pem"
+          openssl genpkey -algorithm ed25519 -out "$k"
+          openssl pkey -in "$k" -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n' > out/test-pubkey.hex
+          mkdir -p out/release
+          cp out/inno/zatvor-setup-0.0.1.exe out/wix/zatvor-0.0.1.msi out/release/
+          (cd out/release && sha256sum zatvor-setup-0.0.1.exe zatvor-0.0.1.msi > SHA256SUMS)
+          openssl pkeyutl -sign -inkey "$k" -rawin -in out/release/SHA256SUMS -out out/release/SHA256SUMS.sig
+          rm -f "$k"
+          cat out/release/SHA256SUMS; echo "test public key: $(cat out/test-pubkey.hex)"
+      - name: install.ps1 end to end (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $key = (Get-Content out\test-pubkey.hex -Raw).Trim()
+          scripts\install\tests\E2E.ps1 -Release out\release -Installer zatvor-setup-0.0.1.exe -PublicKeyHex $key -Out out\results\e2e-inno-ps51.json
+          scripts\install\tests\E2E.ps1 -Release out\release -Installer zatvor-0.0.1.msi -PublicKeyHex $key -Out out\results\e2e-wix-ps51.json
+      - name: install.ps1 end to end (PowerShell 7)
+        shell: pwsh
+        run: |
+          $key = (Get-Content out\test-pubkey.hex -Raw).Trim()
+          scripts\install\tests\E2E.ps1 -Release out\release -Installer zatvor-setup-0.0.1.exe -PublicKeyHex $key -Out out\results\e2e-inno-pwsh.json -Shell pwsh.exe
+      - name: results
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem out/results -Filter *.json | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-results
+          path: |
+            out/results/
+            out/inno/*.exe
+            out/wix/*.msi

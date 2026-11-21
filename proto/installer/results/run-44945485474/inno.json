@@ -1,0 +1,116 @@
+{
+    "format":  "inno",
+    "runner":  {
+                   "os":  "Microsoft Windows NT 10.0.26100.0",
+                   "ps":  "5.1.26100.33822",
+                   "elevated":  true
+               },
+    "sizeBytes":  {
+                      "v1":  2705196,
+                      "v2":  2705219
+                  },
+    "payloadBytes":  1746432,
+    "elevation":  {
+                      "manifestRequestedExecutionLevel":  [
+                                                              "asInvoker"
+                                                          ]
+                  },
+    "silentInstall":  "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
+    "before":  {
+                   "dirExists":  false,
+                   "files":  [
+
+                             ],
+                   "versionTxt":  null,
+                   "exeVersionOut":  null,
+                   "arpEntries":  [
+
+                                  ],
+                   "startMenuLnk":  false,
+                   "hklmSoftwareKey":  false
+               },
+    "installV1":  {
+                      "exitCode":  0,
+                      "seconds":  2.06,
+                      "command":  "D:\\a\\zatvor\\zatvor\\out\\inno\\zatvor-setup-0.0.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"D:\\a\\zatvor\\zatvor\\out\\results\\logs-inno\\install-v1.log\""
+                  },
+    "afterV1":  {
+                    "dirExists":  true,
+                    "files":  [
+                                  "unins000.dat",
+                                  "unins000.exe",
+                                  "VERSION.txt",
+                                  "zatvor.exe"
+                              ],
+                    "versionTxt":  "0.0.1",
+                    "exeVersionOut":  "0.0.0-dev",
+                    "arpEntries":  [
+                                       {
+                                           "Key":  "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{937479BC-4AC5-463F-B8E6-A1459359920F}_is1",
+                                           "DisplayName":  "Zatvor",
+                                           "DisplayVersion":  "0.0.1",
+                                           "InstallLocation":  "C:\\Program Files\\Zatvor\\",
+                                           "UninstallString":  "\"C:\\Program Files\\Zatvor\\unins000.exe\"",
+                                           "QuietUninstallString":  "\"C:\\Program Files\\Zatvor\\unins000.exe\" /SILENT",
+                                           "EstimatedSizeKB":  6027
+                                       }
+                                   ],
+                    "startMenuLnk":  true,
+                    "hklmSoftwareKey":  false
+                },
+    "upgradeV2":  {
+                      "exitCode":  0,
+                      "seconds":  1.01,
+                      "command":  "D:\\a\\zatvor\\zatvor\\out\\inno\\zatvor-setup-0.0.2.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"D:\\a\\zatvor\\zatvor\\out\\results\\logs-inno\\install-v2-over-v1.log\""
+                  },
+    "afterV2":  {
+                    "dirExists":  true,
+                    "files":  [
+                                  "unins000.dat",
+                                  "unins000.exe",
+                                  "VERSION.txt",
+                                  "zatvor.exe"
+                              ],
+                    "versionTxt":  "0.0.2",
+                    "exeVersionOut":  "0.0.0-dev",
+                    "arpEntries":  [
+                                       {
+                                           "Key":  "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{937479BC-4AC5-463F-B8E6-A1459359920F}_is1",
+                                           "DisplayName":  "Zatvor",
+                                           "DisplayVersion":  "0.0.2",
+                                           "InstallLocation":  "C:\\Program Files\\Zatvor\\",
+                                           "UninstallString":  "\"C:\\Program Files\\Zatvor\\unins000.exe\"",
+                                           "QuietUninstallString":  "\"C:\\Program Files\\Zatvor\\unins000.exe\" /SILENT",
+                                           "EstimatedSizeKB":  6027
+                                       }
+                                   ],
+                    "startMenuLnk":  true,
+                    "hklmSoftwareKey":  false
+                },
+    "upgradeInPlace":  {
+                           "versionTxtIs002":  true,
+                           "arpEntryCount":  1,
+                           "arpVersion":  [
+                                              "0.0.2"
+                                          ]
+                       },
+    "uninstall":  {
+                      "exitCode":  0,
+                      "seconds":  1.02,
+                      "command":  "C:\\Program Files\\Zatvor\\unins000.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"D:\\a\\zatvor\\zatvor\\out\\results\\logs-inno\\uninstall.log\"",
+                      "secondsUntilGone":  0.32
+                  },
+    "leftovers":  {
+                      "dirExists":  false,
+                      "files":  [
+
+                                ],
+                      "versionTxt":  null,
+                      "exeVersionOut":  null,
+                      "arpEntries":  [
+
+                                     ],
+                      "startMenuLnk":  false,
+                      "hklmSoftwareKey":  false
+                  }
+}

@@ -44,6 +44,7 @@ var (
 	uuidRe         = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	ipv4Re         = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 	privateKeyRe   = regexp.MustCompile(`(?i)"privateKey"\s*:\s*"([A-Za-z0-9+/_-]{43}=?)"`)
+	iniKeyRe       = regexp.MustCompile(`(?im)^\s*(?:PrivateKey|PresharedKey|HeaderProtectionKey)\s*=\s*([A-Za-z0-9+/_-]{43}=?)\s*$`)
 	pemRe          = regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)
 
 	exampleHosts = []string{"example.net", "example.com", "example.org", "localhost"}
@@ -116,6 +117,11 @@ func Scan(path string, content []byte, allow AllowList) []Finding {
 		for _, m := range privateKeyRe.FindAllStringSubmatch(line, -1) {
 			if !allow.has(m[1]) {
 				add(n, "private-key")
+			}
+		}
+		for _, m := range iniKeyRe.FindAllStringSubmatch(line, -1) {
+			if !allow.has(m[1]) {
+				add(n, "ini-key")
 			}
 		}
 		if pemRe.MatchString(line) {

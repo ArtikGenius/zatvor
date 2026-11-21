@@ -1,0 +1,3 @@
+# Made-up test key in an old commit (renamed and split later in a5b209d).
+# History is kept by Artur's decision, so this one historical finding is ignored.
+899aeb8ed9c24673f783212b214795f5c2b55a45:tools/secretscan/scan_test.go:generic-api-key:81

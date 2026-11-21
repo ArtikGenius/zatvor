@@ -1,6 +1,6 @@
 # Zatvor: design specification (draft)
 
-Status: **APPROVED by Artur 2026-11-19 (stage 0b); mockups approved 2026-11-19.** Date: 2026-11-19. Source of requirements: `brief/BRIEF.md` (not repeated here; this document records what the brief leaves open, what research changed, and the decisions taken). Research backing every factual claim: `docs/research/xray-core.md`, `docs/research/subscriptions.md`, `docs/known-pitfalls.md`.
+Status: **APPROVED by Artur 2026-11-19 (stage 0b); mockups approved 2026-11-19. Stage 0c complete 2026-11-21 (see docs/STATUS.md).** Date: 2026-11-19. Source of requirements: `brief/BRIEF.md` (not repeated here; this document records what the brief leaves open, what research changed, and the decisions taken). Research backing every factual claim: `docs/research/xray-core.md`, `docs/research/subscriptions.md`, `docs/known-pitfalls.md`.
 
 Markers: **[DECIDED]** agreed with Artur; **[CALL]** my call, open to correction; **[0c]** settled by a stage 0c prototype; **[OPEN]** waiting for Artur.
 

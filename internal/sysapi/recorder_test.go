@@ -1,0 +1,83 @@
+package sysapi
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestRecorderWritesAndChangesNothing(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRecorder(&buf)
+	want := ProxyState{Enabled: true, Server: "127.0.0.1:10808", Bypass: []string{"localhost", "<local>"}}
+	if err := r.Set(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled != want.Enabled || got.Server != want.Server || strings.Join(got.Bypass, ",") != strings.Join(want.Bypass, ",") {
+		t.Fatalf("Get = %+v, want %+v", got, want)
+	}
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("log has %d lines, want 2:\n%s", len(lines), buf.String())
+	}
+	for i, op := range []string{"proxy.set", "proxy.get"} {
+		var e struct {
+			TS   string          `json:"ts"`
+			Op   string          `json:"op"`
+			Args json.RawMessage `json:"args"`
+		}
+		if err := json.Unmarshal([]byte(lines[i]), &e); err != nil {
+			t.Fatalf("line %d: %v", i, err)
+		}
+		if e.Op != op {
+			t.Fatalf("line %d op = %q, want %q", i, e.Op, op)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, e.TS); err != nil {
+			t.Fatalf("line %d ts %q: %v", i, e.TS, err)
+		}
+		if e.Args == nil {
+			t.Fatalf("line %d has no args", i)
+		}
+	}
+	// Mutating the caller's slice afterwards must not change what was recorded.
+	want.Bypass[0] = "changed"
+	if got, _ := r.Get(); got.Bypass[0] != "localhost" {
+		t.Fatalf("recorder aliases caller slice: %v", got.Bypass)
+	}
+}
+
+func TestRecorderGetZeroAndProcessOps(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRecorder(&buf)
+	if got, err := r.Get(); err != nil || got.Enabled || got.Server != "" || len(got.Bypass) != 0 {
+		t.Fatalf("fresh Get = %+v, %v; want zero", got, err)
+	}
+	id := ProcID{PID: 4242, Created: time.Unix(1700000000, 5).UTC()}
+	var pc ProcessControl = r
+	for _, f := range []func(ProcID) error{pc.Suspend, pc.Resume, pc.Terminate} {
+		if err := f(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	wantOps := []string{"proxy.get", "proc.suspend", "proc.resume", "proc.terminate"}
+	if len(lines) != len(wantOps) {
+		t.Fatalf("got %d lines:\n%s", len(lines), buf.String())
+	}
+	for i, op := range wantOps {
+		if !strings.Contains(lines[i], `"op":"`+op+`"`) {
+			t.Fatalf("line %d = %s, want op %s", i, lines[i], op)
+		}
+	}
+	if !strings.Contains(lines[1], `"pid":4242`) {
+		t.Fatalf("suspend args missing pid: %s", lines[1])
+	}
+}
+
+var _ SystemProxy = (*Recorder)(nil)

@@ -1,0 +1,98 @@
+{
+    "installer":  "zatvor-0.0.1.msi",
+    "shell":  "powershell.exe",
+    "cases":  {
+                  "refuses without CI=true":  {
+                                                  "exitCode":  2,
+                                                  "seconds":  0.33,
+                                                  "output":  "powershell.exe : install.ps1: stage 0c prototype: runs only on CI runners (CI=true); it would change this system\r\nAt D:\\a\\zatvor\\zatvor\\scripts\\install\\tests\\E2E.ps1:49 char:19\r\n+ ...   $output = \u0026 $Shell -NoProfile -ExecutionPolicy Bypass -File $Script ...\r\n+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : NotSpecified: (install.ps1: st...nge this system:String) [], RemoteException\r\n    + FullyQualifiedErrorId : NativeCommandError",
+                                                  "installedAfter":  false,
+                                                  "want":  "exit 2, installed=False",
+                                                  "pass":  true
+                                              },
+                  "committed placeholder key":  {
+                                                    "exitCode":  1,
+                                                    "seconds":  0.82,
+                                                    "output":  "powershell.exe : install.ps1: SHA256SUMS signature is NOT valid for the Zatvor release key; nothing was installed\r\nAt D:\\a\\zatvor\\zatvor\\scripts\\install\\tests\\E2E.ps1:49 char:19\r\n+ ...   $output = \u0026 $Shell -NoProfile -ExecutionPolicy Bypass -File $Script ...\r\n+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : NotSpecified: (install.ps1: SH...g was installed:String) [], RemoteException\r\n    + FullyQualifiedErrorId : NativeCommandError",
+                                                    "installedAfter":  false,
+                                                    "want":  "exit 1, installed=False",
+                                                    "pass":  true
+                                                },
+                  "signature byte flipped":  {
+                                                 "exitCode":  1,
+                                                 "seconds":  0.77,
+                                                 "output":  "powershell.exe : install.ps1: SHA256SUMS signature is NOT valid for the Zatvor release key; nothing was installed\r\nAt D:\\a\\zatvor\\zatvor\\scripts\\install\\tests\\E2E.ps1:49 char:19\r\n+ ...   $output = \u0026 $Shell -NoProfile -ExecutionPolicy Bypass -File $Script ...\r\n+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : NotSpecified: (install.ps1: SH...g was installed:String) [], RemoteException\r\n    + FullyQualifiedErrorId : NativeCommandError",
+                                                 "installedAfter":  false,
+                                                 "want":  "exit 1, installed=False",
+                                                 "pass":  true
+                                             },
+                  "SHA256SUMS changed after signing":  {
+                                                           "exitCode":  1,
+                                                           "seconds":  0.78,
+                                                           "output":  "powershell.exe : install.ps1: SHA256SUMS signature is NOT valid for the Zatvor release key; nothing was installed\r\nAt D:\\a\\zatvor\\zatvor\\scripts\\install\\tests\\E2E.ps1:49 char:19\r\n+ ...   $output = \u0026 $Shell -NoProfile -ExecutionPolicy Bypass -File $Script ...\r\n+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : NotSpecified: (install.ps1: SH...g was installed:String) [], RemoteException\r\n    + FullyQualifiedErrorId : NativeCommandError",
+                                                           "installedAfter":  false,
+                                                           "want":  "exit 1, installed=False",
+                                                           "pass":  true
+                                                       },
+                  "installer changed (hash mismatch)":  {
+                                                            "exitCode":  1,
+                                                            "seconds":  0.84,
+                                                            "output":  "SHA256SUMS signature: valid\r\npowershell.exe : install.ps1: zatvor-0.0.1.msi SHA-256 \r\nd7f66f0ea9083e38898f11882ec4779fb2d327b6ca6ab41176aea3a9643df657 does not match SHA256SUMS \r\n(6928a0ef2e3210b22573089445feb7b638ba71beccbd4291ee60f5c0b5f5d81b); nothing was installed\r\nAt D:\\a\\zatvor\\zatvor\\scripts\\install\\tests\\E2E.ps1:49 char:19\r\n+ ...   $output = \u0026 $Shell -NoProfile -ExecutionPolicy Bypass -File $Script ...\r\n+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : NotSpecified: (install.ps1: za...g was installed:String) [], RemoteException\r\n    + FullyQualifiedErrorId : NativeCommandError",
+                                                            "installedAfter":  false,
+                                                            "want":  "exit 1, installed=False",
+                                                            "pass":  true
+                                                        },
+                  "valid release, silent install":  {
+                                                        "exitCode":  0,
+                                                        "seconds":  1.91,
+                                                        "output":  "SHA256SUMS signature: valid\r\nzatvor-0.0.1.msi SHA-256: matches\r\ninstalled (zatvor-0.0.1.msi, exit 0)",
+                                                        "installedAfter":  true,
+                                                        "want":  "exit 0, installed=True",
+                                                        "pass":  true,
+                                                        "state":  {
+                                                                      "dirExists":  true,
+                                                                      "files":  [
+                                                                                    "VERSION.txt",
+                                                                                    "zatvor.exe"
+                                                                                ],
+                                                                      "versionTxt":  "0.0.1",
+                                                                      "exeVersionOut":  "0.0.0-dev",
+                                                                      "arpEntries":  [
+                                                                                         {
+                                                                                             "Key":  "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{13D30323-4A8F-4FCA-8191-8EE296C85B93}",
+                                                                                             "DisplayName":  "Zatvor",
+                                                                                             "DisplayVersion":  "0.0.1",
+                                                                                             "InstallLocation":  "",
+                                                                                             "UninstallString":  "MsiExec.exe /I{13D30323-4A8F-4FCA-8191-8EE296C85B93}",
+                                                                                             "QuietUninstallString":  null,
+                                                                                             "EstimatedSizeKB":  1697
+                                                                                         }
+                                                                                     ],
+                                                                      "startMenuLnk":  true,
+                                                                      "hklmSoftwareKey":  true
+                                                                  },
+                                                        "uninstall":  {
+                                                                          "exitCode":  0,
+                                                                          "seconds":  1.02,
+                                                                          "command":  "C:\\Windows\\System32\\msiexec.exe /x {13D30323-4A8F-4FCA-8191-8EE296C85B93} /qn /norestart /l*v \"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\zatvor-e2e-3f9fdcd803784aedb464339e7ebef411\\uninstall.log\"",
+                                                                          "secondsUntilGone":  0.34
+                                                                      },
+                                                        "leftovers":  {
+                                                                          "dirExists":  false,
+                                                                          "files":  [
+
+                                                                                    ],
+                                                                          "versionTxt":  null,
+                                                                          "exeVersionOut":  null,
+                                                                          "arpEntries":  [
+
+                                                                                         ],
+                                                                          "startMenuLnk":  false,
+                                                                          "hklmSoftwareKey":  false
+                                                                      }
+                                                    }
+              },
+    "failed":  [
+
+               ]
+}
