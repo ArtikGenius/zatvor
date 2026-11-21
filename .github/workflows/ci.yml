@@ -47,6 +47,33 @@ jobs:
       - run: go vet -tags xrayint ./...
       - run: go test -tags xrayint -v ./internal/xrayint/...
 
+  systemtest-windows:
+    # Live system tests: they really change the host, so they run only on
+    # disposable GitHub runners. systest.Main refuses unless CI=true (set by
+    # Actions) and ZATVOR_ALLOW_LIVE=1 (set here). The ubuntu entry runs only
+    # the gate tests, which change nothing.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            pkgs: ./internal/systest/... ./internal/proc/freeze/...
+          - os: ubuntu-latest
+            pkgs: ./internal/systest/...
+    runs-on: ${{ matrix.os }}
+    env:
+      ZATVOR_ALLOW_LIVE: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet -tags systemtest ./...
+      - run: go test -tags systemtest -v ${{ matrix.pkgs }}
+
   secrets:
     runs-on: ubuntu-latest
     steps:
