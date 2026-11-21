@@ -1,6 +1,6 @@
 # Status
 
-Stage 0c (prototypes) is complete as of 2026-11-21. Next: stage 1. Plan of 0c:
+Stage 0c (prototypes) is complete as of 2026-11-21, pending the merge to main and the macOS UI check. Next: stage 1. Plan of 0c:
 [docs/superpowers/plans/2026-11-19-stage-0c-prototypes.md](superpowers/plans/2026-11-19-stage-0c-prototypes.md).
 What to check: [docs/checklists/stage-0c.md](checklists/stage-0c.md).
 
@@ -47,9 +47,9 @@ Deferred minor review findings:
 - xraybin: no zip-slip regression test; `MkdirAll` before validation; `LimitReader` truncates silently.
 - noise migration: untagged outbound reported as an empty tag; dead int case in `encodeValue`; hex internal-whitespace comment.
 - xrayint: `freeTCPPort` TOCTOU; `ds[1]` shape not compared across runs; no early-exit detection; broad "deprecated" substring.
-- testguard/sysapi: registry is per process, not per test; Check-to-action TOCTOU (act on the same handle).
+- testguard/sysapi: registry is per process, not per test. (Check-to-action TOCTOU: resolved in Task 7, freeze acts on the handle it checked.)
 - systest: cleanup `Resume` skips Check and ignores its error; gate convention not enforced for future packages (add a CI grep); invalid-pid error lacks context.
-- proto/tun: throughput wording should say "higher median, overlapping ranges"; NOTICE lacks transitive deps of `proto/tun/b`.
+- proto/tun: NOTICE lacks transitive deps of `proto/tun/b`.
 - installer scripts: `install.ps1` hash-to-run TOCTOU (hold the handle); cofactored PowerShell vs cofactorless OpenSSL verification policy note; two untested rejection branches; `install.sh` trap for INT/TERM; exit code for a missing file.
 
 ## Next: stage 1
@@ -58,3 +58,6 @@ Windows VPN client: import all formats, geo, system proxy, routing, basic tray a
 updates, crash recovery and rollback, diagnostics, CLI `status` and `check`.
 Acceptance: Artur's test subscription imports; Hysteria2-DNS, XHTTP and Vision connect; Artur's
 home-internet check.
+Open for planning: Artur has no interactive Windows device, so stage 1 must say where Windows checks run
+(CI runner, cloud Windows VM, or moved to the Mac). This affects the acceptance above, the tray placement
+check (ADR 0005) and the Hyper-V check (ADR 0003).

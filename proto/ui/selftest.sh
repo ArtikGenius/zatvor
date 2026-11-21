@@ -4,6 +4,7 @@
 #   proto/ui/selftest.sh tauri|wails
 # Writes results/<framework>-<os>.json and results/<framework>-<os>-env.txt.
 set -euo pipefail
+[ "${CI:-}" = true ] || { echo "selftest.sh: CI only" >&2; exit 2; }
 
 fw=$1
 mkdir -p results work

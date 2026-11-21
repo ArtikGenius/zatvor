@@ -3,7 +3,7 @@
 // In safe mode nothing on the host is touched: system calls go to the
 // recorder in package sysapi instead. Every build (dev and, until a stage
 // ships releases, release too) defaults to safe and refuses live mode unless
-// ZATVOR_ALLOW_LIVE=1 is also set (only the CI systemtest job sets it). Any doubt resolves to safe.
+// ZATVOR_ALLOW_LIVE=1 is also set (only CI jobs set it: systemtest-windows, proto-tun). Any doubt resolves to safe.
 package safemode
 
 import (

@@ -39,7 +39,7 @@ Method, limits and earlier runs: `proto/tun/RESULTS.md`; raw JSON: `proto/tun/re
 ## Decision
 
 **A: Xray's own `tun` inbound**, by the spec rule: A passed every row that a CI runner can measure, with
-higher throughput and lower idle CPU than B, in one process instead of two. B stays in `proto/tun/b` as the
+higher median throughput (per-run ranges overlap) and lower idle CPU than B, in one process instead of two. B stays in `proto/tun/b` as the
 fallback.
 
 The decision rests on two readings that a reviewer should see:

@@ -14,5 +14,4 @@ All notable changes to Zatvor are recorded here.
 - UI prototypes (Tauri 2, Wails v3); decision: Tauri 2, macOS check pending.
 - Installer prototypes (WiX, Inno) and signed install scripts; decision: WiX v5 / MSI.
 - Architecture decision records 0001-0009 and the stage 0c checklist.
-
 - Repository foundation: licence, secret scan, CI.

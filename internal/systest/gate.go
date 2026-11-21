@@ -10,7 +10,7 @@
 //
 // and calls systest.Require(t) first in every test. Both refuse unless env
 // CI is exactly "true" (GitHub Actions sets it) and ZATVOR_ALLOW_LIVE is
-// exactly "1" (only the CI systemtest job sets it).
+// exactly "1" (only CI jobs set it: systemtest-windows, proto-tun).
 package systest
 
 import (
