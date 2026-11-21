@@ -66,28 +66,28 @@ func TestScanFlagsPublicIPv4InFixtures(t *testing.T) {
 }
 
 func TestScanFlagsPrivateKeys(t *testing.T) {
-	key := "uJ3kQ0Zr5y1XbL8mP2nV7sT4wA9cE6hG1dF0iK3oM5q" + "="
-	if len(key) != 44 {
-		t.Fatalf("test key length %d", len(key))
+	b64 := "uJ3kQ0Zr5y1X" + "bL8mP2nV7sT4" + "wA9cE6hG1dF0" + "iK3oM5q" + "="
+	if len(b64) != 44 {
+		t.Fatalf("test b64 length %d", len(b64))
 	}
-	wantRules(t, Scan("c.json", []byte(`"privateKey": "`+key+`"`), nil), "private-key")
+	wantRules(t, Scan("c.json", []byte(`"privateKey": "`+b64+`"`), nil), "private-key")
 	pem := "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
 	wantRules(t, Scan("id", []byte(pem), nil), "private-key")
 	wantRules(t, Scan("id", []byte("-----BEGIN "+"PRIVATE KEY-----"), nil), "private-key")
-	wantRules(t, Scan("c.json", []byte(`"privateKey": "`+key+`"`), AllowList{key: {}}))
+	wantRules(t, Scan("c.json", []byte(`"privateKey": "`+b64+`"`), AllowList{b64: {}}))
 }
 
 func TestScanFlagsINIKeys(t *testing.T) {
-	key := "uJ3kQ0Zr5y1XbL8mP2nV7sT4wA9cE6hG1dF0iK3oM5q" + "="
+	b64 := "uJ3kQ0Zr5y1X" + "bL8mP2nV7sT4" + "wA9cE6hG1dF0" + "iK3oM5q" + "="
 	for _, name := range []string{"PrivateKey", "presharedkey", "HEADERPROTECTIONKEY"} {
-		line := []byte(name + " = " + key + "\r\n")
+		line := []byte(name + " = " + b64 + "\r\n")
 		wantRules(t, Scan("a.conf", line, nil), "ini-key")
-		wantRules(t, Scan("a.conf", line, AllowList{key: {}}))
+		wantRules(t, Scan("a.conf", line, AllowList{b64: {}}))
 	}
 	// 43-char value without padding is also flagged.
-	wantRules(t, Scan("a.conf", []byte("PrivateKey = "+key[:43]), nil), "ini-key")
+	wantRules(t, Scan("a.conf", []byte("PrivateKey = "+b64[:43]), nil), "ini-key")
 	// PublicKey is not secret.
-	wantRules(t, Scan("a.conf", []byte("PublicKey = "+key), nil))
+	wantRules(t, Scan("a.conf", []byte("PublicKey = "+b64), nil))
 }
 
 func TestScanReportsLineNumbers(t *testing.T) {
