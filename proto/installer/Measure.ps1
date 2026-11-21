@@ -18,7 +18,9 @@ Assert-ZatvorCI
 
 $V1 = (Resolve-Path $V1).Path
 $V2 = (Resolve-Path $V2).Path
-$logDir = Join-Path (Split-Path -Parent $Out) "logs-$Format"
+# Absolute: the Inno uninstaller re-launches itself from %TEMP%, where a
+# relative /LOG= path does not resolve.
+$logDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath((Join-Path (Split-Path -Parent $Out) "logs-$Format"))
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 function Get-ElevationEvidence([string]$Path) {
@@ -75,7 +77,9 @@ try {
         arpVersion      = @($r.afterV2.arpEntries | ForEach-Object { $_.DisplayVersion })
     }
 
-    $r.uninstall = Invoke-ZatvorUninstall (Join-Path $logDir 'uninstall.log')
+    $uLog = Join-Path $logDir 'uninstall.log'
+    $r.uninstall = Invoke-ZatvorUninstall $uLog
+    if ($r.uninstall.exitCode -ne 0 -and (Test-Path -LiteralPath $uLog)) { $r.uninstall.logTail = @(Get-Content -LiteralPath $uLog -Tail 30) }
     $r.leftovers = Get-ZatvorState
 } catch {
     $r.error = "$_"

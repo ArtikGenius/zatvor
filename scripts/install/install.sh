@@ -7,7 +7,7 @@
 # macOS/Linux package yet, so --source names a local directory and the script
 # stops after verification; it changes nothing on the system.
 #
-# Needs an openssl with Ed25519 and -rawin (OpenSSL 3.x). macOS ships
+# Needs an openssl with Ed25519 and -rawin (OpenSSL 3 or newer). macOS ships
 # LibreSSL as /usr/bin/openssl; if the openssl found lacks Ed25519 the script
 # refuses and says how to get one. OPENSSL=/path/to/openssl overrides.
 #
@@ -70,7 +70,7 @@ hex_to_file() {
 refuse_openssl() {
 	ver=$("$OPENSSL" version 2>/dev/null || echo 'not found')
 	say "this openssl cannot verify Ed25519 signatures: $OPENSSL ($ver)"
-	say 'it needs OpenSSL 3 (pkeyutl -rawin with Ed25519). Nothing was checked or installed.'
+	say 'it needs OpenSSL 3 or newer (pkeyutl -rawin with Ed25519). Nothing was checked or installed.'
 	case "$(uname -s)" in
 	Darwin)
 		say 'macOS: brew install openssl@3, then rerun with'
@@ -78,7 +78,7 @@ refuse_openssl() {
 		;;
 	*)
 		say 'Linux: install OpenSSL 3 from your distribution (Debian/Ubuntu: apt install openssl), then rerun'
-		say '  or point OPENSSL=/path/to/openssl at an OpenSSL 3 binary.'
+		say '  or point OPENSSL=/path/to/openssl at an OpenSSL 3+ binary.'
 		;;
 	esac
 	exit 3
