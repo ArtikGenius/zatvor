@@ -1,0 +1,59 @@
+name: proto-installer
+
+# Stage 0c, task 10: installer format (Inno Setup 6 vs WiX v5) and the
+# one-line install scripts with Ed25519-signed SHA256SUMS (spec §11, R3.2).
+# Installers are installed and removed only on disposable windows-latest
+# runners; scripts that change the system refuse unless CI=true.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'proto/installer/**'
+      - 'scripts/install/**'
+      - '.github/workflows/proto-installer.yml'
+
+permissions:
+  contents: read
+
+env:
+  PESTER_VERSION: "5.9.0"
+
+jobs:
+  ed25519:
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh] # Windows PowerShell 5.1 and PowerShell 7
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pester ${{ env.PESTER_VERSION }}
+        run: |
+          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION
+          "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition)), Pester $((Get-Module Pester).Version)"
+          $c = New-PesterConfiguration
+          $c.Run.Path = 'scripts/install/tests/Ed25519.Tests.ps1'
+          $c.Run.Exit = $true
+          $c.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $c
+      - name: verify time
+        run: |
+          . ./scripts/install/Ed25519.ps1
+          function hex([string]$h) { $b = New-Object byte[] ($h.Length / 2); for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [Convert]::ToByte($h.Substring(2 * $i, 2), 16) }; , $b }
+          # RFC 8032 section 7.1 TEST 3
+          $pk = hex 'fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025'
+          $m = hex 'af82'
+          $sig = hex '6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a'
+          $ms = foreach ($i in 1..7) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            if (-not (Test-Ed25519Signature -PublicKey $pk -Message $m -Signature $sig)) { throw 'verify failed' }
+            $sw.Stop(); $sw.Elapsed.TotalMilliseconds
+          }
+          $sorted = $ms | Sort-Object
+          "ed25519 verify on PowerShell $($PSVersionTable.PSVersion): first $([math]::Round($ms[0])) ms, median $([math]::Round($sorted[3])) ms, max $([math]::Round($sorted[-1])) ms (7 runs)"
