@@ -26,7 +26,7 @@ Method, limits and earlier runs: `proto/tun/RESULTS.md`; raw JSON: `proto/tun/re
 
 | Criterion | A (run 1 / run 2) | B (run 1 / run 2) | A | B |
 |---|---|---|---|---|
-| DNS leak IPv4, packets on the physical NIC (control without tunnel: 84–116) | 0 / 0 | 0 / 0 | pass | pass |
+| DNS leak IPv4, packets on the physical NIC (control without tunnel: 84–112) | 0 / 0 | 0 / 0 | pass | pass |
 | DNS leak IPv6 | 0 / 0, no IPv6 on runner | 0 / 0, no IPv6 on runner | inconclusive | inconclusive |
 | Bypass packets to probe addresses (control: 27–30) | 0 / 0 | 0 / 0 | pass | pass |
 | kill -9: adapter gone / routes clean / internet back (s) | 0.04/0.04/0.31, 0.00/0.00/0.33 | 0.00/0.00/0.35, 0.05/0.05/0.33 | pass | pass |
@@ -57,12 +57,17 @@ The decision rests on two readings that a reviewer should see:
 - Zatvor ships xray.exe with wintun.dll (pinned: wintun-0.14.1.zip, SHA-256
   `07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51`). Wintun's prebuilt-binary licence must be
   checked before the first release (`NOTICE`).
-- The Xray config generator owns the TUN settings above; the kill-switch is `autoSystemWfpBlockLeak`
-  (`dns`, `misconfigtun`; `all`/`allexceptlan` to be evaluated for a strict mode). The daemon supervises
-  xray.exe; on a crash Windows removes the adapter, routes and WFP filters itself (measured < 0.4 s).
+- The Xray config generator owns the TUN settings above. `autoSystemWfpBlockLeak` (`dns`, `misconfigtun`;
+  `all`/`allexceptlan` to be evaluated) is **in-session leak protection only, not a kill-switch**: its
+  filters live in a dynamic WFP session of xray.exe, so when Xray dies Windows removes them with the
+  adapter and routes (measured: 30 filters → 0, traffic leaves directly after ~0.3 s). Staying fail-closed
+  across an Xray crash needs persistent WFP block filters owned by zatvor-helper / the protection engine
+  (spec §4.1 assigns WFP blocks to the helper), which only the helper removes. B fails open the same way
+  (its strict-route filters are also a dynamic session), so this does not change the decision. The daemon
+  supervises and restarts xray.exe (restart measured at 0.3–0.4 s to TUN up).
 - Every process path in per-app rules is canonicalised to the file system's exact case (the same API Xray
   uses, `QueryFullProcessImageName`, or a case-correct path walk) before it goes into the config. A test pins
-  this. Rules on flows whose owner Xray cannot find (seen once per run, a connection closed at once) fall
+  this. Rules on flows whose owner Xray cannot find (seen once in run 44923882926, probably a connection that closed at once) fall
   through to the next rule, so "send app X direct" fails safe into the tunnel, but "send app X to block"
   would not: per-app *block* rules need their own check before they are offered.
 - Must still be checked, because a runner cannot: IPv6 leaks on a dual-stack network and sleep/wake (stage 3

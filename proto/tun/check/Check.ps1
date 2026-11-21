@@ -422,14 +422,15 @@ try {
     $cap = Invoke-Capture 'tunnel' 8000
     $D.tunnelCapture = $cap
     $R.dnsLeakV4 = [int]$cap.counts.dnsV4
-    $R.dnsLeakV6 = [int]$cap.counts.dnsV6
+    if ($D.ipv6DefaultRoute -or $D.ipv6Internet) { $R.dnsLeakV6 = [int]$cap.counts.dnsV6 }
+    else { $R.dnsLeakV6 = "not measured: no IPv6 on runner ($([int]$cap.counts.dnsV6) IPv6 DNS packets seen)" }
     $R.bypassPackets = [int]$cap.counts.probe
     EndSection
 
     # ---------------------------------------------------------------- per-app
     Section 'per-app rule'
     $D.perApp = Invoke-PerApp 'per-app'
-    $R.perAppRule = $D.perApp.pass
+    $R.perAppRule = $D.perApp.pass # combined with the late check below
     EndSection
 
     # ---------------------------------------------------------------- throughput
@@ -463,6 +464,7 @@ try {
 
     Section 'per-app rule again (more than 60 s after TUN up)'
     $D.perAppLate = Invoke-PerApp 'per-app-late'
+    $R.perAppRule = [bool]($D.perApp.pass -and $D.perAppLate.pass)
     EndSection
 
     # ---------------------------------------------------------------- kill

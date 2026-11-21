@@ -37,6 +37,10 @@ workflow `.github/workflows/proto-tun.yml`, script `proto/tun/check/Check.ps1`. 
 
 \* A matches process paths **case-sensitively**: see "per-app rule" below.
 
+Since commit after review: `Check.ps1` writes `dnsLeakV6 = "not measured: no IPv6 on runner (...)"` when the
+runner has no IPv6, and `perAppRule` is the AND of the early and late checks. The raw JSON of run
+44924472104 predates this (it has `dnsLeakV6: 0` and the early check only; both checks were true there).
+
 Throughput over all runs where it was measured (Mbit/s): A 3054.6 (run 44922767086), 1602.5 (44923328972),
 2363.3 (44923882926), 1546.5, 2488.1 (44924472104) — median 2363; B 1726.4, 1751.0, 1858.6, 1735.9 — median 1743.
 Loopback without any tunnel or Xray on the same runners: 28 800–44 900 Mbit/s, so neither number is
@@ -63,7 +67,7 @@ then 10 s of the runner's own background traffic. `pcapcount` counts in the pcap
 - Bypass: any packet to or from a probe address (or `1.1.1.1:80`). Through the tunnel these end on loopback,
   so on the NIC they can only be traffic that skipped the TUN.
 
-The same capture **without** the tunnel is the control, and it sees the leaks: 84–116 DNS packets to
+The same capture **without** the tunnel is the control, and it sees the leaks: 84–112 DNS packets to
 `168.63.129.16:53` / `1.1.1.1:53` and 27–30 probe packets (3 flows) per run. With either tunnel up: 0 and 0.
 
 Limits, stated plainly:
@@ -116,9 +120,10 @@ written here) sent it direct. Run 44923882926 added diagnostic rules; the access
 Xray's `ProcessNameMatcher` uses `slices.Contains` / `strings.HasPrefix` on the path from
 `QueryFullProcessImageName`, which reports the file system's case (`C:\Windows\System32\curl.exe`). From
 run 44924472104 on, `Check.ps1` puts the exact-case path in the rule (`Get-CanonicalPath`), and A passes. A
-product on A must canonicalise every user-chosen path the same way. Also seen once per A run:
-`app/router: Unables to find local process name: common/net: not found` for a connection that closed at
-once (the lookup only considers ESTABLISHED TCP); such a flow falls through to the next rule.
+product on A must canonicalise every user-chosen path the same way. Also seen once, in run 44923882926 (not
+in 44924472104): `app/router: Unables to find local process name: common/net: not found`, probably for a
+connection that closed at once (the lookup only considers ESTABLISHED TCP); such a flow falls through to the
+next rule.
 
 ## Wintun pin
 
