@@ -1,0 +1,5 @@
+# Known-fake or public literals, one per line. Always say why.
+
+# Placeholder hostname used as the "real-looking" example in the plan's
+# secretscan test description (docs/superpowers/plans/...); not a real panel.
+panel.real-host.ru

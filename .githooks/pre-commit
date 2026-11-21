@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuse commits that contain what looks like a real secret.
+# Enable once per clone: scripts/dev/enable-hooks.ps1 (or: git config core.hooksPath .githooks)
+exec go run ./tools/secretscan --staged

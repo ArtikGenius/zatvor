@@ -1,0 +1,15 @@
+Zatvor is licensed under GPL-3.0 (see LICENSE). It bundles or downloads the
+following third-party components.
+
+Xray-core (MPL-2.0)
+  https://github.com/XTLS/Xray-core
+  Shipped as an unmodified binary. Source and licence are at the URL above.
+
+roscomvpn geoip / geosite data
+  https://github.com/hydraponique/roscomvpn-geoip
+  https://github.com/hydraponique/roscomvpn-geosite
+  These repositories carry no licence file. Use is a known and accepted risk.
+
+domain-list-community (MIT)
+  https://github.com/v2fly/domain-list-community
+  Copyright (c) v2fly contributors.

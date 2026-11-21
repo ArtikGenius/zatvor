@@ -1,0 +1,9 @@
+brief/
+.superpowers/
+/bin/
+/dist/
+*.exe
+!testdata/**/*.exe
+/third_party/xray/bin/
+node_modules/
+target/
