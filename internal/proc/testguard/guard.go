@@ -1,14 +1,16 @@
 // Package testguard lets tests act only on processes they spawned.
 //
 // Spawn starts the helper program testguard/child with a fresh random token
-// in env ZATVOR_TEST_TOKEN. The child writes the token to its handshake file
-// <os.TempDir()>/zatvor-guard-<pid>. Check accepts a ProcID only if all hold:
+// in env ZATVOR_TEST_TOKEN and a fresh private directory (t.TempDir) in env
+// ZATVOR_GUARD_DIR. The child writes the token to <dir>/handshake (temp file
+// + rename). Check accepts a ProcID only if all hold:
 //
 //   - this test process spawned it (in-process registry),
 //   - the process is running (not exited, not a zombie),
 //   - its OS creation time equals id.Created exactly (guards PID reuse),
 //   - its parent is this test process,
-//   - its handshake file holds the token Spawn generated.
+//   - the handshake file in the directory Spawn recorded for it holds the
+//     token Spawn generated.
 //
 // Any failure, including failure to read OS data, is a refusal. Another
 // process's environment is never read; the handshake file is used on every OS.
@@ -31,7 +33,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +47,9 @@ type ProcID = sysapi.ProcID
 // TokenEnv is the env var that carries the per-child token.
 const TokenEnv = "ZATVOR_TEST_TOKEN"
 
+// DirEnv is the env var that names the child's private handshake directory.
+const DirEnv = "ZATVOR_GUARD_DIR"
+
 const childPkg = "github.com/ArtikGenius/zatvor/internal/proc/testguard/child"
 
 // handshakeTimeout bounds how long Spawn waits for the child's handshake.
@@ -59,6 +63,7 @@ type osInfo struct {
 
 type child struct {
 	token    string
+	dir      string // private handshake directory
 	cmd      *exec.Cmd
 	stdin    io.Closer
 	done     chan struct{} // closed after cmd.Wait returns
@@ -71,11 +76,9 @@ var (
 	registry = map[int]*child{}
 )
 
-// HandshakePath is the file in which the child with this PID writes its token.
+// handshakeFile is the file in dir where the child writes its token.
 // testguard/child builds the same path.
-func HandshakePath(pid int) string {
-	return filepath.Join(os.TempDir(), "zatvor-guard-"+strconv.Itoa(pid))
-}
+func handshakeFile(dir string) string { return filepath.Join(dir, "handshake") }
 
 // Spawn starts the helper named name (only "child", the program in
 // testguard/child, exists) with args, waits for its handshake and returns its
@@ -95,13 +98,16 @@ func Spawn(t *testing.T, name string, args ...string) ProcID {
 	}
 	token := hex.EncodeToString(tok)
 
+	dir := t.TempDir() // private, removed after the cleanup below has run
+
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(envWithout(os.Environ(), TokenEnv), TokenEnv+"="+token)
+	cmd.Env = append(envWithout(envWithout(os.Environ(), TokenEnv), DirEnv),
+		TokenEnv+"="+token, DirEnv+"="+dir)
 	stdin, err := cmd.StdinPipe() // child exits on EOF, i.e. when we die
 	if err != nil {
 		t.Fatalf("testguard.Spawn: %v", err)
 	}
-	c := &child{token: token, cmd: cmd, stdin: stdin, done: make(chan struct{}), stderr: new(bytes.Buffer)}
+	c := &child{token: token, dir: dir, cmd: cmd, stdin: stdin, done: make(chan struct{}), stderr: new(bytes.Buffer)}
 	cmd.Stderr = c.stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("testguard.Spawn: start: %v", err)
@@ -114,8 +120,6 @@ func Spawn(t *testing.T, name string, args ...string) ProcID {
 	mu.Unlock()
 	t.Cleanup(func() {
 		c.stop()
-		_ = os.Remove(HandshakePath(pid))
-		_ = os.Remove(HandshakePath(pid) + ".tmp")
 		mu.Lock()
 		if registry[pid] == c {
 			delete(registry, pid)
@@ -127,7 +131,7 @@ func Spawn(t *testing.T, name string, args ...string) ProcID {
 	if err != nil {
 		t.Fatalf("testguard.Spawn: read own child %d: %v", pid, err)
 	}
-	if err := waitHandshake(c, pid); err != nil {
+	if err := waitHandshake(c); err != nil {
 		t.Fatalf("testguard.Spawn: %v", err)
 	}
 	return ProcID{PID: pid, Created: info.created}
@@ -148,11 +152,11 @@ func Check(id ProcID) error {
 	if c == nil {
 		return fmt.Errorf("testguard: refusing pid %d: not spawned by this test process", id.PID)
 	}
-	return verify(id, c.token)
+	return verify(id, c.token, c.dir)
 }
 
-// verify checks id against the OS and the handshake file.
-func verify(id ProcID, token string) error {
+// verify checks id against the OS and the handshake file in dir.
+func verify(id ProcID, token, dir string) error {
 	info, err := procInfo(id.PID)
 	if err != nil {
 		return fmt.Errorf("testguard: refusing pid %d: %w", id.PID, err)
@@ -164,7 +168,7 @@ func verify(id ProcID, token string) error {
 	if self := os.Getpid(); info.ppid != self {
 		return fmt.Errorf("testguard: refusing pid %d: parent is %d, not this test process %d", id.PID, info.ppid, self)
 	}
-	b, err := os.ReadFile(HandshakePath(id.PID))
+	b, err := os.ReadFile(handshakeFile(dir))
 	if err != nil {
 		return fmt.Errorf("testguard: refusing pid %d: handshake: %w", id.PID, err)
 	}
@@ -196,12 +200,13 @@ func (c *child) stop() {
 	})
 }
 
-func waitHandshake(c *child, pid int) error {
+func waitHandshake(c *child) error {
+	pid := c.cmd.Process.Pid
 	deadline := time.After(handshakeTimeout)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if b, err := os.ReadFile(HandshakePath(pid)); err == nil && strings.TrimSpace(string(b)) == c.token {
+		if b, err := os.ReadFile(handshakeFile(c.dir)); err == nil && strings.TrimSpace(string(b)) == c.token {
 			return nil
 		}
 		select {

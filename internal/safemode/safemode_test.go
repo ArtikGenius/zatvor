@@ -7,9 +7,6 @@ func envOf(m map[string]string) func(string) string {
 }
 
 func TestResolveDevDefaultsSafe(t *testing.T) {
-	if releaseBuild {
-		t.Skip("dev-build default; this binary was built with -tags release")
-	}
 	mode, src := Resolve(nil, envOf(nil))
 	if mode != Safe || src != SourceBuildDefault {
 		t.Fatalf("got %v (%v), want safe (build default)", mode, src)
@@ -20,9 +17,6 @@ func TestResolveDevDefaultsSafe(t *testing.T) {
 }
 
 func TestResolveLiveRefusedWithoutAllow(t *testing.T) {
-	if releaseBuild {
-		t.Skip("the allow gate applies to dev builds only")
-	}
 	cases := []struct {
 		name string
 		args []string
@@ -78,5 +72,46 @@ func TestResolveFlagWinsOverEnv(t *testing.T) {
 	// Flags after "--" are not flags.
 	if mode, src := Resolve([]string{"--", "--live"}, envOf(map[string]string{"ZATVOR_ALLOW_LIVE": "1"})); mode != buildDefault || src != SourceBuildDefault {
 		t.Fatalf("after --: got %v (%v)", mode, src)
+	}
+}
+
+func TestResolveFlagValueForms(t *testing.T) {
+	// Live would win through env if a flag were ignored.
+	liveEnv := map[string]string{"ZATVOR_SAFE": "0", "ZATVOR_ALLOW_LIVE": "1"}
+	safeEnv := map[string]string{"ZATVOR_SAFE": "1", "ZATVOR_ALLOW_LIVE": "1"}
+	cases := []struct {
+		args     []string
+		env      map[string]string
+		wantMode Mode
+		wantSrc  Source
+	}{
+		{[]string{"--safe=true"}, liveEnv, Safe, SourceFlag},
+		{[]string{"-safe=true"}, liveEnv, Safe, SourceFlag},
+		{[]string{"--safe=1"}, liveEnv, Safe, SourceFlag},
+		{[]string{"--safe=T"}, liveEnv, Safe, SourceFlag},
+		{[]string{"--safe=maybe"}, liveEnv, Safe, SourceFlag},
+		{[]string{"--safe="}, liveEnv, Safe, SourceFlag},
+		{[]string{"--live=nope"}, liveEnv, Safe, SourceFlag},
+		{[]string{"--live=true", "--safe=true"}, liveEnv, Safe, SourceFlag},
+		// --safe=false is not a live request: env/default decide.
+		{[]string{"--safe=false"}, liveEnv, Live, SourceEnv},
+		{[]string{"--safe=false"}, safeEnv, Safe, SourceEnv},
+		{[]string{"--safe=false"}, nil, Safe, SourceBuildDefault},
+		// --live=<v> is a live request only when v parses true.
+		{[]string{"--live=true"}, safeEnv, Live, SourceFlag},
+		{[]string{"-live=1"}, safeEnv, Live, SourceFlag},
+		{[]string{"--live=false"}, liveEnv, Live, SourceEnv},
+		{[]string{"--live=false"}, safeEnv, Safe, SourceEnv},
+		{[]string{"--live=true"}, map[string]string{}, Safe, SourceLiveRefused},
+		// Not our flags.
+		{[]string{"---live"}, safeEnv, Safe, SourceEnv},
+		{[]string{"live"}, safeEnv, Safe, SourceEnv},
+		{[]string{"--lively"}, safeEnv, Safe, SourceEnv},
+	}
+	for _, c := range cases {
+		mode, src := Resolve(c.args, envOf(c.env))
+		if mode != c.wantMode || src != c.wantSrc {
+			t.Errorf("Resolve(%q, %v) = %v (%v), want %v (%v)", c.args, c.env, mode, src, c.wantMode, c.wantSrc)
+		}
 	}
 }

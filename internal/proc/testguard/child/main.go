@@ -1,9 +1,10 @@
 // Command child is the helper process that testguard.Spawn starts. It
 // writes its handshake file, then optionally counts. It is never run by
-// hand: without ZATVOR_TEST_TOKEN it exits at once.
+// hand: without ZATVOR_TEST_TOKEN and ZATVOR_GUARD_DIR it exits at once.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,12 +21,12 @@ func main() {
 	counter := flag.String("counter", "", "write an incrementing counter to this file every 50 ms")
 	flag.Parse()
 
-	token := os.Getenv("ZATVOR_TEST_TOKEN")
-	if token == "" {
-		fmt.Fprintln(os.Stderr, "child: ZATVOR_TEST_TOKEN not set; run only via testguard.Spawn")
+	token, dir := os.Getenv("ZATVOR_TEST_TOKEN"), os.Getenv("ZATVOR_GUARD_DIR")
+	if token == "" || dir == "" {
+		fmt.Fprintln(os.Stderr, "child: ZATVOR_TEST_TOKEN or ZATVOR_GUARD_DIR not set; run only via testguard.Spawn")
 		os.Exit(2)
 	}
-	if err := handshake(token); err != nil {
+	if err := handshake(dir, token); err != nil {
 		fmt.Fprintln(os.Stderr, "child: handshake:", err)
 		os.Exit(1)
 	}
@@ -48,14 +49,23 @@ func main() {
 	}
 }
 
-// handshake writes the token to <os.TempDir()>/zatvor-guard-<pid> (same path
-// as testguard.HandshakePath) via a temp file and rename, so a reader never
-// sees a partial token.
-func handshake(token string) error {
-	path := filepath.Join(os.TempDir(), "zatvor-guard-"+strconv.Itoa(os.Getpid()))
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(token+"\n"), 0o600); err != nil {
+// handshake writes the token to <dir>/handshake (the path
+// testguard.handshakeFile builds) via a fresh temp file in dir and a rename,
+// so a reader never sees a partial token.
+func handshake(dir, token string) error {
+	f, err := os.CreateTemp(dir, "handshake-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, werr := f.WriteString(token + "\n")
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(f.Name())
+		return errors.Join(werr, cerr)
+	}
+	if err := os.Rename(f.Name(), filepath.Join(dir, "handshake")); err != nil {
+		_ = os.Remove(f.Name())
+		return err
+	}
+	return nil
 }

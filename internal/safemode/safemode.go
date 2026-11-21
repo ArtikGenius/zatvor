@@ -1,10 +1,15 @@
 // Package safemode decides whether a Zatvor binary may change the system.
 //
 // In safe mode nothing on the host is touched: system calls go to the
-// recorder in package sysapi instead. Dev builds (no "release" build tag)
-// default to safe and refuse live mode unless ZATVOR_ALLOW_LIVE=1 is also set
-// (only the CI systemtest job sets it). Any doubt resolves to safe.
+// recorder in package sysapi instead. Every build (dev and, until a stage
+// ships releases, release too) defaults to safe and refuses live mode unless
+// ZATVOR_ALLOW_LIVE=1 is also set (only the CI systemtest job sets it). Any doubt resolves to safe.
 package safemode
+
+import (
+	"strconv"
+	"strings"
+)
 
 // Mode is safe or live.
 type Mode int
@@ -46,11 +51,14 @@ func (s Source) String() string {
 	}
 }
 
-// Resolve picks the mode. Precedence: flag (--safe/--live), then env
+// Resolve picks the mode. Precedence: flag (--safe/--live in every form the
+// flag package accepts, including -safe and --live=true), then env
 // ZATVOR_SAFE (1 = safe, 0 = live, anything else = safe), then the build
-// default. --safe together with --live is safe. Args after "--" are not
-// flags. In dev builds a live result needs env ZATVOR_ALLOW_LIVE=1 exactly,
-// otherwise the result is (Safe, SourceLiveRefused).
+// default. --safe together with --live is safe; a flag value that is not a
+// bool is safe; --safe=false and --live=false request nothing and fall
+// through to env/default. Args after "--" are not flags. A live result
+// needs env ZATVOR_ALLOW_LIVE=1 exactly (all builds for now); otherwise the
+// result is (Safe, SourceLiveRefused).
 func Resolve(args []string, env func(string) string) (Mode, Source) {
 	if env == nil {
 		env = func(string) string { return "" }
@@ -62,10 +70,26 @@ func Resolve(args []string, env func(string) string) (Mode, Source) {
 		if a == "--" {
 			break
 		}
-		switch a {
-		case "--safe", "-safe":
+		name, val, hasVal := parseFlag(a)
+		var on bool
+		switch {
+		case name != "safe" && name != "live":
+			continue
+		case !hasVal:
+			on = true
+		default:
+			b, err := strconv.ParseBool(val)
+			if err != nil {
+				sawSafe = true // unparseable value: doubt, so safe
+				continue
+			}
+			on = b
+		}
+		// --safe=false and --live=false request nothing.
+		if on && name == "safe" {
 			sawSafe = true
-		case "--live", "-live":
+		}
+		if on && name == "live" {
 			sawLive = true
 		}
 	}
@@ -96,4 +120,22 @@ func Resolve(args []string, env func(string) string) (Mode, Source) {
 func lookup(env func(string) string, key string) (string, bool) {
 	v := env(key)
 	return v, v != ""
+}
+
+// parseFlag splits "-name", "--name", "-name=v" or "--name=v" the way the
+// flag package accepts them. Anything else returns name "".
+func parseFlag(a string) (name, val string, hasVal bool) {
+	switch {
+	case strings.HasPrefix(a, "--"):
+		a = a[2:]
+	case strings.HasPrefix(a, "-"):
+		a = a[1:]
+	default:
+		return "", "", false
+	}
+	if a == "" || a[0] == '-' {
+		return "", "", false
+	}
+	name, val, hasVal = strings.Cut(a, "=")
+	return name, val, hasVal
 }

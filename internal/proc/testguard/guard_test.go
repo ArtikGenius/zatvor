@@ -42,7 +42,7 @@ func TestGuardRefusesForeignPID(t *testing.T) {
 	t.Logf("Check(parent) refused: %v", err)
 	if infoErr != nil {
 		t.Logf("parent %d not readable (%v); parent-check part skipped", ppid, infoErr)
-	} else if err := verify(id, "token"); err == nil || !strings.Contains(err.Error(), "parent") {
+	} else if err := verify(id, "token", t.TempDir()); err == nil || !strings.Contains(err.Error(), "parent") {
 		// Even with a token on record, the parent check alone refuses it.
 		t.Fatalf("verify(parent) = %v, want parent refusal", err)
 	} else {
@@ -85,9 +85,53 @@ func TestGuardRefusesExited(t *testing.T) {
 
 func TestGuardRefusesWrongToken(t *testing.T) {
 	id := Spawn(t, "child")
-	if err := verify(id, "not-the-token"); err == nil || !strings.Contains(err.Error(), "token") {
+	if err := verify(id, "not-the-token", registered(t, id).dir); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("verify(wrong token) = %v, want token refusal", err)
 	}
+}
+
+func TestGuardRefusesMissingHandshake(t *testing.T) {
+	id := Spawn(t, "child")
+	if err := Check(id); err != nil {
+		t.Fatalf("Check before delete = %v", err)
+	}
+	if err := os.Remove(handshakeFile(registered(t, id).dir)); err != nil {
+		t.Fatal(err)
+	}
+	err := Check(id)
+	if err == nil || !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("Check(live child, handshake deleted) = %v, want handshake refusal", err)
+	}
+	t.Logf("refused: %v", err)
+}
+
+func TestHandshakeIsInPerSpawnDir(t *testing.T) {
+	id := Spawn(t, "child")
+	dir := registered(t, id).dir
+	if filepath.Clean(dir) == filepath.Clean(os.TempDir()) {
+		t.Fatalf("handshake dir %s is the shared temp dir", dir)
+	}
+	if _, err := os.Stat(filepath.Join(os.TempDir(), "zatvor-guard-"+strconv.Itoa(id.PID))); err == nil {
+		t.Fatal("handshake file written to the shared temp dir")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "handshake" {
+		t.Fatalf("handshake dir holds %v, want only handshake", entries)
+	}
+}
+
+func registered(t *testing.T, id ProcID) *child {
+	t.Helper()
+	mu.Lock()
+	defer mu.Unlock()
+	c := registry[id.PID]
+	if c == nil {
+		t.Fatalf("pid %d not registered", id.PID)
+	}
+	return c
 }
 
 func readCounter(t *testing.T, path string, wait time.Duration) int {
