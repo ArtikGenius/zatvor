@@ -26,7 +26,7 @@ Method, limits and earlier runs: `proto/tun/RESULTS.md`; raw JSON: `proto/tun/re
 
 | Criterion | A (run 1 / run 2) | B (run 1 / run 2) | A | B |
 |---|---|---|---|---|
-| DNS leak IPv4, packets on the physical NIC (control without tunnel: 84–112) | 0 / 0 | 0 / 0 | pass | pass |
+| DNS leak IPv4, packets on the physical NIC (control without tunnel, run 44924472104: 84–112) | 0 / 0 | 0 / 0 | pass | pass |
 | DNS leak IPv6 | 0 / 0, no IPv6 on runner | 0 / 0, no IPv6 on runner | inconclusive | inconclusive |
 | Bypass packets to probe addresses (control: 27–30) | 0 / 0 | 0 / 0 | pass | pass |
 | kill -9: adapter gone / routes clean / internet back (s) | 0.04/0.04/0.31, 0.00/0.00/0.33 | 0.00/0.00/0.35, 0.05/0.05/0.33 | pass | pass |
@@ -62,9 +62,12 @@ The decision rests on two readings that a reviewer should see:
   filters live in a dynamic WFP session of xray.exe, so when Xray dies Windows removes them with the
   adapter and routes (measured: 30 filters → 0, traffic leaves directly after ~0.3 s). Staying fail-closed
   across an Xray crash needs persistent WFP block filters owned by zatvor-helper / the protection engine
-  (spec §4.1 assigns WFP blocks to the helper), which only the helper removes. B fails open the same way
-  (its strict-route filters are also a dynamic session), so this does not change the decision. The daemon
-  supervises and restarts xray.exe (restart measured at 0.3–0.4 s to TUN up).
+  (spec §4.1 assigns WFP blocks to the helper), which only the helper removes. B fails open the same way:
+  after kill, internet was back directly in 0.33–0.35 s and its WFP filters went 10 → 4 (the 4 left are
+  most likely sing-tun's persistent firewall rule, not blocks; sing-tun v0.9.6 opens its strict-route
+  session with `FWPM_SESSION_FLAG_DYNAMIC`, `tun_windows.go:197`), so this does not change the decision. The
+  daemon supervises and restarts xray.exe: in the restart-after-kill step the TUN was up again 0.32–0.38 s
+  after the new xray.exe started (A), against 1.08–1.12 s for the first start of a fresh runner.
 - Every process path in per-app rules is canonicalised to the file system's exact case (the same API Xray
   uses, `QueryFullProcessImageName`, or a case-correct path walk) before it goes into the config. A test pins
   this. Rules on flows whose owner Xray cannot find (seen once in run 44923882926, probably a connection that closed at once) fall

@@ -37,7 +37,7 @@ workflow `.github/workflows/proto-tun.yml`, script `proto/tun/check/Check.ps1`. 
 
 \* A matches process paths **case-sensitively**: see "per-app rule" below.
 
-Since commit after review: `Check.ps1` writes `dnsLeakV6 = "not measured: no IPv6 on runner (...)"` when the
+Since commit c5b41a2 (after review): `Check.ps1` writes `dnsLeakV6 = "not measured: no IPv6 on runner (...)"` when the
 runner has no IPv6, and `perAppRule` is the AND of the early and late checks. The raw JSON of run
 44924472104 predates this (it has `dnsLeakV6: 0` and the early check only; both checks were true there).
 
@@ -67,8 +67,9 @@ then 10 s of the runner's own background traffic. `pcapcount` counts in the pcap
 - Bypass: any packet to or from a probe address (or `1.1.1.1:80`). Through the tunnel these end on loopback,
   so on the NIC they can only be traffic that skipped the TUN.
 
-The same capture **without** the tunnel is the control, and it sees the leaks: 84–112 DNS packets to
-`168.63.129.16:53` / `1.1.1.1:53` and 27–30 probe packets (3 flows) per run. With either tunnel up: 0 and 0.
+The same capture **without** the tunnel is the control, and it sees the leaks: in run 44924472104, 84–112 DNS packets to
+`168.63.129.16:53` / `1.1.1.1:53` and 27–30 probe packets (3 flows) per runner (earlier runs: up to 116 in
+44923882926 and 142 in 44922767086, both on A). With either tunnel up: 0 and 0.
 
 Limits, stated plainly:
 - Only DNS ports and the probe destinations are attributed. Other traffic on the NIC (e.g. to Azure's
