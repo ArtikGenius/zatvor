@@ -1,0 +1,503 @@
+{
+ "memory": {
+  "when": "hidden, 50 s after start",
+  "hiddenPrivateWorkingSetMB": 61.8,
+  "processes": [
+   {
+    "pid": 9416,
+    "name": "zatvor-proto-wails",
+    "ppid": 1920,
+    "privateWorkingSetMB": 5.5,
+    "workingSetMB": 29.9,
+    "privateBytesMB": 50.1
+   },
+   {
+    "pid": 3604,
+    "name": "msedgewebview2",
+    "ppid": 9416,
+    "privateWorkingSetMB": 26.9,
+    "workingSetMB": 99.6,
+    "privateBytesMB": 32.6
+   },
+   {
+    "pid": 7892,
+    "name": "msedgewebview2#1",
+    "ppid": 3604,
+    "privateWorkingSetMB": 2.1,
+    "workingSetMB": 18.3,
+    "privateBytesMB": 3.6
+   },
+   {
+    "pid": 8064,
+    "name": "msedgewebview2#2",
+    "ppid": 3604,
+    "privateWorkingSetMB": 6,
+    "workingSetMB": 35.2,
+    "privateBytesMB": 10.8
+   },
+   {
+    "pid": 800,
+    "name": "msedgewebview2#3",
+    "ppid": 3604,
+    "privateWorkingSetMB": 6.2,
+    "workingSetMB": 35,
+    "privateBytesMB": 12.4
+   },
+   {
+    "pid": 5892,
+    "name": "msedgewebview2#4",
+    "ppid": 3604,
+    "privateWorkingSetMB": 2.7,
+    "workingSetMB": 18.3,
+    "privateBytesMB": 7.3
+   },
+   {
+    "pid": 3396,
+    "name": "msedgewebview2#5",
+    "ppid": 3604,
+    "privateWorkingSetMB": 12.4,
+    "workingSetMB": 58.6,
+    "privateBytesMB": 21.8
+   }
+  ]
+ },
+ "screen": {
+  "measured": 20,
+  "method": "external pixel watcher (proto/ui/pixelwatch): show() call timestamp to the first screen read with the popup's colour at a point inside the window; resolution about the poll interval",
+  "samples": [
+   {
+    "id": 0,
+    "rgbBefore": "0c0c0c",
+    "rgbShown": "ffffff",
+    "screenMs": 35.2
+   },
+   {
+    "id": 1,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 50.5
+   },
+   {
+    "id": 2,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 42.4
+   },
+   {
+    "id": 3,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 33.9
+   },
+   {
+    "id": 4,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 40.8
+   },
+   {
+    "id": 5,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 59.5
+   },
+   {
+    "id": 6,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 38.3
+   },
+   {
+    "id": 7,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 62.8
+   },
+   {
+    "id": 8,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 61.6
+   },
+   {
+    "id": 9,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 40.4
+   },
+   {
+    "id": 10,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 50
+   },
+   {
+    "id": 11,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 51.9
+   },
+   {
+    "id": 12,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 30.7
+   },
+   {
+    "id": 13,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 50.7
+   },
+   {
+    "id": 14,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 46.4
+   },
+   {
+    "id": 15,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 52.6
+   },
+   {
+    "id": 16,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 36.8
+   },
+   {
+    "id": 17,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 68.6
+   },
+   {
+    "id": 18,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 44.8
+   },
+   {
+    "id": 19,
+    "rgbBefore": "aa4707",
+    "rgbShown": "ffffff",
+    "screenMs": 52.6
+   }
+  ],
+  "screenMsFirstShow": 35.2,
+  "screenMsMax": 68.6,
+  "screenMsMedian": 48.2,
+  "screenMsMin": 30.7,
+  "watcher": {
+   "pollMsAvg": 19.87387859052248,
+   "polls": 4115,
+   "seconds": 81.7810104
+  }
+ },
+ "metrics": {
+  "arch": "amd64",
+  "binaryMB": 10.1,
+  "childProcesses": [
+   {
+    "pid": 9416,
+    "name": "zatvor-proto-wails.exe",
+    "link": "self",
+    "rssMB": 29.9,
+    "ppid": 1920
+   },
+   {
+    "pid": 3604,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 99.5,
+    "ppid": 9416
+   },
+   {
+    "pid": 7892,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 18.2,
+    "ppid": 3604
+   },
+   {
+    "pid": 8064,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 35.1,
+    "ppid": 3604
+   },
+   {
+    "pid": 800,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 34.7,
+    "ppid": 3604
+   },
+   {
+    "pid": 5892,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 18.2,
+    "ppid": 3604
+   },
+   {
+    "pid": 3396,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 58.2,
+    "ppid": 3604
+   }
+  ],
+  "exe": "D:\\a\\zatvor\\zatvor\\out\\zatvor-proto-wails.exe",
+  "framework": "wails",
+  "frameworkVersion": "v3.1.0",
+  "hiddenFootprintMB": "not measured: macOS only (see hiddenPrivateMB)",
+  "hiddenPrivateMB": 138.5,
+  "hiddenRssMB": 294.2,
+  "method": "self-test: hidden 60 s, then 20 code toggles; openMs = Show() call to the page's requestAnimationFrame callback reported over the asset server (median)",
+  "notes": null,
+  "openMs": 45.1,
+  "openMsFirstShow": 16.6,
+  "openMsMax": 93.5,
+  "openMsMin": 16.6,
+  "os": "windows",
+  "processesAfterToggles": [
+   {
+    "pid": 9416,
+    "name": "zatvor-proto-wails.exe",
+    "link": "self",
+    "rssMB": 31.1,
+    "ppid": 1920
+   },
+   {
+    "pid": 3604,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 110.8,
+    "ppid": 9416
+   },
+   {
+    "pid": 7892,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 12.6,
+    "ppid": 3604
+   },
+   {
+    "pid": 8064,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 35.1,
+    "ppid": 3604
+   },
+   {
+    "pid": 800,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 35.9,
+    "ppid": 3604
+   },
+   {
+    "pid": 5892,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 18.2,
+    "ppid": 3604
+   },
+   {
+    "pid": 3396,
+    "name": "msedgewebview2.exe",
+    "link": "child",
+    "rssMB": 59.2,
+    "ppid": 3604
+   }
+  ],
+  "rssAfterTogglesMB": 303.1,
+  "samples": [
+   {
+    "id": 0,
+    "paintMs": 16.6,
+    "showCallMs": 2.8,
+    "t0UnixNs": 1795281201970129900,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 1,
+    "paintMs": 45.1,
+    "showCallMs": 27.4,
+    "t0UnixNs": 1795281203003368200,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 2,
+    "paintMs": 34.1,
+    "showCallMs": 21.3,
+    "t0UnixNs": 1795281204061976000,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 3,
+    "paintMs": 30.6,
+    "showCallMs": 12,
+    "t0UnixNs": 1795281205111803600,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 4,
+    "paintMs": 34.2,
+    "showCallMs": 19.5,
+    "t0UnixNs": 1795281206157978000,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 5,
+    "paintMs": 59.7,
+    "showCallMs": 38.7,
+    "t0UnixNs": 1795281207210450800,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 6,
+    "paintMs": 31.4,
+    "showCallMs": 18.1,
+    "t0UnixNs": 1795281208283692200,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 7,
+    "paintMs": 90.4,
+    "showCallMs": 72.7,
+    "t0UnixNs": 1795281209334052500,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 8,
+    "paintMs": 45.1,
+    "showCallMs": 38.1,
+    "t0UnixNs": 1795281210441731000,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 9,
+    "paintMs": 32.7,
+    "showCallMs": 20.5,
+    "t0UnixNs": 1795281211516940900,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 10,
+    "paintMs": 76.3,
+    "showCallMs": 60.4,
+    "t0UnixNs": 1795281212582191900,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 11,
+    "paintMs": 45.9,
+    "showCallMs": 29.9,
+    "t0UnixNs": 1795281213722232300,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 12,
+    "paintMs": 47.2,
+    "showCallMs": 40,
+    "t0UnixNs": 1795281214800133800,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 13,
+    "paintMs": 34.3,
+    "showCallMs": 27.9,
+    "t0UnixNs": 1795281215876661600,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 14,
+    "paintMs": 44.6,
+    "showCallMs": 25.5,
+    "t0UnixNs": 1795281216942162900,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 15,
+    "paintMs": 47.8,
+    "showCallMs": 30.2,
+    "t0UnixNs": 1795281218001773200,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 16,
+    "paintMs": 62.6,
+    "showCallMs": 46.1,
+    "t0UnixNs": 1795281219065170000,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 17,
+    "paintMs": 93.5,
+    "showCallMs": 78.1,
+    "t0UnixNs": 1795281220144391700,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 18,
+    "paintMs": 43.7,
+    "showCallMs": 23.9,
+    "t0UnixNs": 1795281221256829000,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 19,
+    "paintMs": 78.5,
+    "showCallMs": 62,
+    "t0UnixNs": 1795281222330250600,
+    "visAtEval": "visible",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   }
+  ],
+  "selfTestSeconds": 81,
+  "timestampUnix": 1795281223
+ }
+}
