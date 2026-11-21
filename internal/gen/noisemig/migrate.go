@@ -2,6 +2,18 @@
 // sockopt.dialerProxy into a streamSettings.finalmask.udp noise item
 // (docs/research/xray-core.md §3, spec §6.4). It is off by default: callers
 // switch it on only for an Xray release that no longer accepts "noises".
+//
+// For each outbound X whose streamSettings.sockopt.dialerProxy names a freedom
+// outbound D with non-empty settings.noises, Migrate appends
+// {"type":"noise","settings":{"reset":0,"noise":[...]}} as the last
+// finalmask.udp item of X, removes the dialerProxy (and an emptied sockopt),
+// removes D, and drops empty "noises" arrays from other freedom outbounds.
+// It refuses, leaving the config byte-identical, when the translation would
+// not be mechanical: noise already in finalmask, D chained to another proxy,
+// applyTo, a port-53 redirect, D with other settings, or D referenced by
+// anything besides the dialerProxy fields being migrated (a routing rule,
+// proxySettings, a balancer or observatory selector), since removing or
+// stripping D would change the traffic routed to it.
 package noisemig
 
 import (
@@ -10,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -22,7 +35,11 @@ const (
 	ReasonApplyTo                 = "noise uses applyTo, which finalmask lacks"
 	ReasonRedirect53              = "noise freedom redirects to port 53"
 	ReasonFreedomHasOtherSettings = "noise freedom has settings besides noises"
+	ReasonFreedomReferenced       = "noise freedom is referenced by more than dialerProxy"
 )
+
+// randShape is the legacy rand packet: a length "n" or a range "a-b".
+var randShape = regexp.MustCompile(`^[0-9]+(-[0-9]+)?$`)
 
 // Refusal names an outbound whose legacy noise was not migrated, and why.
 type Refusal struct{ Tag, Reason string }
@@ -89,10 +106,20 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 		cands = append(cands, candidate{x: x, d: d, xTag: xTag, dTag: dTag, noises: noises})
 	}
 
+	// The dialerProxy fields about to be removed do not count as references.
+	migrating := map[*object]bool{}
+	for _, c := range cands {
+		migrating[objectAt(c.x, "streamSettings", "sockopt")] = true
+	}
+
 	var rep Report
 	translated := make([][]any, len(cands))
 	for i, c := range cands {
-		if reason := refusal(c); reason != "" {
+		reason := refusal(c)
+		if reason == "" && referenced(rootObj, c.d, c.dTag, migrating) {
+			reason = ReasonFreedomReferenced
+		}
+		if reason != "" {
 			rep.Refused = append(rep.Refused, Refusal{Tag: c.xTag, Reason: reason})
 			continue
 		}
@@ -126,11 +153,6 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 	}
 
 	for _, f := range freedoms {
-		if referenced(rootObj, f.d, f.dTag) {
-			// Still routed to: keep it, minus the noises now in finalmask.
-			objectAt(f.d, "settings").del("noises")
-			continue
-		}
 		removeOutbound(rootObj, f.d)
 	}
 
@@ -227,7 +249,10 @@ func translateNoises(noises []any) ([]any, error) {
 			}
 		}
 		typ, _ := stringAt(o, "type")
-		packet, _ := stringAt(o, "packet")
+		packet, ok := stringAt(o, "packet")
+		if !ok || packet == "" {
+			return nil, fmt.Errorf("noise %d: packet must be a non-empty string", i)
+		}
 		item := &object{}
 		switch typ {
 		case "hex":
@@ -237,6 +262,9 @@ func translateNoises(noises []any) ([]any, error) {
 				}
 				return r
 			}, packet)
+			if p == "" {
+				return nil, fmt.Errorf("noise %d: hex packet is only whitespace", i)
+			}
 			if _, err := hex.DecodeString(p); err != nil {
 				return nil, fmt.Errorf("noise %d: bad hex packet: %w", i, err)
 			}
@@ -252,9 +280,15 @@ func translateNoises(noises []any) ([]any, error) {
 			if err != nil {
 				return nil, fmt.Errorf("noise %d: bad base64 packet: %w", i, err)
 			}
+			if len(raw) == 0 {
+				return nil, fmt.Errorf("noise %d: base64 packet decodes to nothing", i)
+			}
 			item.set("type", "base64")
 			item.set("packet", base64.StdEncoding.EncodeToString(raw))
 		case "rand":
+			if !randShape.MatchString(packet) {
+				return nil, fmt.Errorf("noise %d: rand packet %q is not \"n\" or \"a-b\"", i, packet)
+			}
 			item.set("rand", packet)
 		default:
 			return nil, fmt.Errorf("noise %d: unknown type %q", i, typ)
@@ -283,9 +317,10 @@ func appendNoise(x *object, items []any) {
 	fm.set("udp", append(arr, mask))
 }
 
-// referenced reports whether anything but d's own "tag" names tag. Routing
-// balancer and observatory selectors match by prefix.
-func referenced(root, d *object, tag string) bool {
+// referenced reports whether anything but d's own "tag" and the dialerProxy
+// of the sockopt objects in skip names tag. Routing balancer and observatory
+// selectors match by prefix.
+func referenced(root, d *object, tag string, skip map[*object]bool) bool {
 	var walk func(v any, key string, owner *object) bool
 	walk = func(v any, key string, owner *object) bool {
 		switch t := v.(type) {
@@ -302,7 +337,7 @@ func referenced(root, d *object, tag string) bool {
 				}
 			}
 		case string:
-			if owner == d && key == "tag" {
+			if owner == d && key == "tag" || skip[owner] && key == "dialerProxy" {
 				return false
 			}
 			if t == tag {

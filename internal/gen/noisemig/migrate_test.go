@@ -147,6 +147,23 @@ func TestMigrateRefuses(t *testing.T) {
 		{"freedom sockopt", legacyConfig(plainFinalmask,
 			`{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [`+hexNoise+`]}, "streamSettings": {"sockopt": {"mark": 255}}}`),
 			ReasonFreedomHasOtherSettings},
+		{"freedom referenced by a rule", []byte(`{
+  "outbounds": [
+    {"tag": "proxy", "protocol": "hysteria", "streamSettings": {"finalmask": ` + plainFinalmask + `, "sockopt": {"dialerProxy": "dns-noise"}}},
+    {"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [` + hexNoise + `]}}
+  ],
+  "routing": {"rules": [{"type": "field", "network": "udp", "outboundTag": "dns-noise"}]}
+}`), ReasonFreedomReferenced},
+		{"freedom referenced by proxySettings", legacyConfig(plainFinalmask,
+			`{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [`+hexNoise+`]}}, {"tag": "other", "protocol": "vless", "proxySettings": {"tag": "dns-noise"}}`),
+			ReasonFreedomReferenced},
+		{"freedom matched by balancer selector", []byte(`{
+  "outbounds": [
+    {"tag": "proxy", "protocol": "hysteria", "streamSettings": {"finalmask": ` + plainFinalmask + `, "sockopt": {"dialerProxy": "dns-noise"}}},
+    {"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [` + hexNoise + `]}}
+  ],
+  "routing": {"balancers": [{"tag": "lb", "selector": ["dns"]}]}
+}`), ReasonFreedomReferenced},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -190,7 +207,8 @@ func TestMigrateItemTranslation(t *testing.T) {
       {"type": "hex", "packet": " de ad\nbe ef ", "delay": 5},
       {"type": "str", "packet": "hello"},
       {"type": "base64", "packet": "-_8", "delay": "1-2"},
-      {"type": "rand", "packet": "10-20", "delay": "3"}
+      {"type": "rand", "packet": "10-20", "delay": "3"},
+      {"type": "rand", "packet": "7"}
     ]}}`)
 	out, rep, err := Migrate(in)
 	if err != nil {
@@ -205,17 +223,44 @@ func TestMigrateItemTranslation(t *testing.T) {
         {"type": "hex", "packet": "deadbeef", "delay": 5},
         {"type": "str", "packet": "hello"},
         {"type": "base64", "packet": "+/8=", "delay": "1-2"},
-        {"rand": "10-20", "delay": "3"}
+        {"rand": "10-20", "delay": "3"},
+        {"rand": "7"}
       ]}}]}}}]}`
 	if !semanticEqual(t, out, []byte(want)) {
 		t.Fatalf("got:\n%s", out)
 	}
 }
 
-func TestMigrateSharedFreedomAndReferences(t *testing.T) {
+func TestMigrateSharedFreedom(t *testing.T) {
 	in := []byte(`{
   "outbounds": [
     {"tag": "a", "protocol": "hysteria", "streamSettings": {"sockopt": {"dialerProxy": "dns-noise", "mark": 1}}},
+    {"tag": "b", "protocol": "hysteria", "streamSettings": {"sockopt": {"dialerProxy": "dns-noise"}}},
+    {"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "str", "packet": "x"}]}}
+  ]
+}`)
+	out, rep, err := Migrate(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.Migrated, []string{"a", "b"}) || len(rep.Refused) != 0 {
+		t.Fatalf("report = %+v", rep)
+	}
+	want := `{
+  "outbounds": [
+    {"tag": "a", "protocol": "hysteria", "streamSettings": {"sockopt": {"mark": 1}, "finalmask": {"udp": [{"type": "noise", "settings": {"reset": 0, "noise": [{"type": "str", "packet": "x"}]}}]}}},
+    {"tag": "b", "protocol": "hysteria", "streamSettings": {"finalmask": {"udp": [{"type": "noise", "settings": {"reset": 0, "noise": [{"type": "str", "packet": "x"}]}}]}}}
+  ]
+}`
+	if !semanticEqual(t, out, []byte(want)) {
+		t.Fatalf("got:\n%s", out)
+	}
+}
+
+func TestMigrateSharedFreedomReferencedRefusesAll(t *testing.T) {
+	in := []byte(`{
+  "outbounds": [
+    {"tag": "a", "protocol": "hysteria", "streamSettings": {"sockopt": {"dialerProxy": "dns-noise"}}},
     {"tag": "b", "protocol": "hysteria", "streamSettings": {"sockopt": {"dialerProxy": "dns-noise"}}},
     {"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "str", "packet": "x"}]}}
   ],
@@ -225,46 +270,30 @@ func TestMigrateSharedFreedomAndReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(rep.Migrated, []string{"a", "b"}) {
+	if !bytes.Equal(out, in) {
+		t.Fatalf("output not byte-identical:\n%s", out)
+	}
+	want := []Refusal{{"a", ReasonFreedomReferenced}, {"b", ReasonFreedomReferenced}}
+	if !reflect.DeepEqual(rep.Refused, want) || len(rep.Migrated) != 0 {
 		t.Fatalf("report = %+v", rep)
-	}
-	want := `{
-  "outbounds": [
-    {"tag": "a", "protocol": "hysteria", "streamSettings": {"sockopt": {"mark": 1}, "finalmask": {"udp": [{"type": "noise", "settings": {"reset": 0, "noise": [{"type": "str", "packet": "x"}]}}]}}},
-    {"tag": "b", "protocol": "hysteria", "streamSettings": {"finalmask": {"udp": [{"type": "noise", "settings": {"reset": 0, "noise": [{"type": "str", "packet": "x"}]}}]}}},
-    {"tag": "dns-noise", "protocol": "freedom", "settings": {}}
-  ],
-  "routing": {"rules": [{"outboundTag": "dns-noise", "type": "field", "network": "udp"}]}
-}`
-	if !semanticEqual(t, out, []byte(want)) {
-		t.Fatalf("got:\n%s", out)
-	}
-}
-
-func TestMigrateBalancerPrefixKeepsFreedom(t *testing.T) {
-	in := []byte(`{
-  "outbounds": [
-    {"tag": "p", "protocol": "hysteria", "streamSettings": {"sockopt": {"dialerProxy": "dns-noise"}}},
-    {"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "str", "packet": "x"}]}}
-  ],
-  "routing": {"balancers": [{"tag": "lb", "selector": ["dns"]}]}
-}`)
-	out, _, err := Migrate(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(out, []byte(`"tag": "dns-noise"`)) {
-		t.Fatalf("freedom removed although a balancer selector matches it:\n%s", out)
 	}
 }
 
 func TestMigrateErrors(t *testing.T) {
 	bad := map[string][]byte{
-		"not json":      []byte(`{`),
-		"bad hex":       legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "hex", "packet": "zz"}]}}`),
-		"bad base64":    legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "base64", "packet": "!!"}]}}`),
-		"unknown type":  legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "HEX", "packet": "00"}]}}`),
-		"unknown field": legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "str", "packet": "x", "extra": 1}]}}`),
+		"not json":            []byte(`{`),
+		"bad hex":             legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "hex", "packet": "zz"}]}}`),
+		"bad base64":          legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "base64", "packet": "!!"}]}}`),
+		"unknown type":        legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "HEX", "packet": "00"}]}}`),
+		"missing packet":      legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "str"}]}}`),
+		"non-string packet":   legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "hex", "packet": 1}]}}`),
+		"empty packet":        legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "str", "packet": ""}]}}`),
+		"empty base64 packet": legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "base64", "packet": " = "}]}}`),
+		"empty hex packet":    legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "hex", "packet": "  "}]}}`),
+		"rand not a range":    legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "rand", "packet": "abc"}]}}`),
+		"rand open range":     legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "rand", "packet": "10-"}]}}`),
+		"rand three parts":    legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "rand", "packet": "1-2-3"}]}}`),
+		"unknown field":       legacyConfig(plainFinalmask, `{"tag": "dns-noise", "protocol": "freedom", "settings": {"noises": [{"type": "str", "packet": "x", "extra": 1}]}}`),
 	}
 	for name, in := range bad {
 		out, _, err := Migrate(in)
