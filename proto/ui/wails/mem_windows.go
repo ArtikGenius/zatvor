@@ -87,5 +87,12 @@ func processTreeMemory() memReport {
 			RSSMB: mb(w), PPID: int(all[pid].ppid)})
 	}
 	rep.RSSMB, rep.PrivateMB = mb(ws), mb(priv)
+	rep.FootprintMB = "not measured: macOS only (see hiddenPrivateMB)"
 	return rep
+}
+
+func preciseUnixNano() int64 {
+	var ft windows.Filetime
+	windows.GetSystemTimePreciseAsFileTime(&ft)
+	return ft.Nanoseconds()
 }

@@ -17,10 +17,16 @@ MINGW* | MSYS* | CYGWIN*)
 		echo "runner: $ImageOS $ImageVersion"
 		powershell -NoProfile -Command '(Get-CimInstance Win32_OperatingSystem).Caption; (Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Format-List; Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" -Directory -ErrorAction SilentlyContinue | ForEach-Object { "WebView2 runtime dir: $($_.Name)" }; "session: $([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"; "interactive: $([Environment]::UserInteractive)"'
 	} >"results/$fw-$os-env.txt" 2>&1 || true
+	cat "results/$fw-$os-env.txt"
 	rm -f out/metrics.json
+	(cd proto/ui && go build -o ../../out/pixelwatch.exe ./pixelwatch)
+	out/pixelwatch.exe -watch -title Zatvor -out "results/$fw-$os-pixels.jsonl" -max "${limit}s" &
+	watcher=$!
 	start=$(date +%s)
-	powershell -NoProfile -Command "\$p = Start-Process -FilePath '$exe' -ArgumentList '--self-test' -PassThru; if (-not \$p.WaitForExit(${limit}000)) { Stop-Process -Id \$p.Id -Force; Write-Output 'self-test timed out'; exit 1 }; Write-Output ('exit code ' + \$p.ExitCode)"
+	powershell -NoProfile -ExecutionPolicy Bypass -File proto/ui/selftest-win.ps1 -Exe "$exe" -Out "results/$fw-$os-memory.json" -Limit $limit
 	echo "wall seconds: $(($(date +%s) - start))" >>"results/$fw-$os-env.txt"
+	wait $watcher || echo "pixelwatch exited with $?"
+	out/pixelwatch.exe -analyze -metrics out/metrics.json -pixels "results/$fw-$os-pixels.jsonl" -out "results/$fw-$os-screen.json" || true
 	metrics=out/metrics.json
 	;;
 Darwin)
@@ -51,6 +57,7 @@ Darwin)
 		sleep 2
 	done
 	echo "wall seconds: $(($(date +%s) - start))" >>"results/$fw-$os-env.txt"
+	cat "results/$fw-$os-env.txt"
 	metrics=work/$app/Contents/MacOS/metrics.json
 	;;
 *)

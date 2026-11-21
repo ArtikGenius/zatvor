@@ -12,6 +12,14 @@ static int responsible_pid(int pid) {
 	}
 	return f ? f(pid) : -1;
 }
+#include <libproc.h>
+#include <sys/resource.h>
+// phys_footprint (what Activity Monitor shows as Memory); -1 on error.
+static long long footprint(int pid) {
+	struct rusage_info_v2 ri;
+	if (proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *)&ri) != 0) return -1;
+	return (long long)ri.ri_phys_footprint;
+}
 */
 import "C"
 
@@ -20,7 +28,10 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
+
+func preciseUnixNano() int64 { return time.Now().UnixNano() }
 
 // processTreeMemory sums the resident size of this process, its descendants by
 // parent PID, and the WebKit XPC helpers whose responsible process is this
@@ -54,6 +65,9 @@ func processTreeMemory() memReport {
 	links := map[int]string{me: "self"}
 	for i := 0; i < len(tree); i++ {
 		for _, k := range kids[tree[i]] {
+			if all[k].name == "ps" || strings.HasSuffix(all[k].name, "/ps") {
+				continue // our own measurement command
+			}
 			if _, ok := links[k]; !ok {
 				links[k] = "child"
 				tree = append(tree, k)
@@ -72,11 +86,24 @@ func processTreeMemory() memReport {
 			}
 		}
 	}
-	var rss uint64
+	var rss, foot uint64
+	footOK := true
 	for _, pid := range tree {
 		e := all[pid]
 		rss += e.rss
-		rep.Processes = append(rep.Processes, procInfo{PID: pid, Name: e.name, Link: links[pid], RSSMB: mb(e.rss), PPID: e.ppid})
+		pi := procInfo{PID: pid, Name: e.name, Link: links[pid], RSSMB: mb(e.rss), PPID: e.ppid}
+		if f := C.footprint(C.int(pid)); f >= 0 {
+			foot += uint64(f)
+			pi.Foot = mb(uint64(f))
+		} else {
+			footOK = false
+		}
+		rep.Processes = append(rep.Processes, pi)
+	}
+	if footOK {
+		rep.FootprintMB = mb(foot)
+	} else {
+		rep.FootprintMB = "not measured: proc_pid_rusage failed for a process in the tree"
 	}
 	for pid, e := range all {
 		if strings.Contains(e.name, "WebKit") {

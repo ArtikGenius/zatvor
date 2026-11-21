@@ -150,11 +150,12 @@ func runSelfTest(tray *application.SystemTray, popup *application.WebviewWindow,
 		if err := tray.PositionWindow(popup, gap); err != nil {
 			notes = append(notes, fmt.Sprintf("toggle %d: PositionWindow: %v", i, err))
 		}
+		t0Wall := preciseUnixNano()
 		t0 := time.Now()
 		popup.Show()
 		showRet := time.Since(t0)
 		popup.ExecJS(probeJS(i))
-		s := map[string]any{"id": i, "showCallMs": ms(showRet)}
+		s := map[string]any{"id": i, "t0UnixNs": t0Wall, "showCallMs": ms(showRet)}
 		deadline := time.After(5 * time.Second)
 	wait:
 		for {
@@ -199,6 +200,8 @@ func runSelfTest(tray *application.SystemTray, popup *application.WebviewWindow,
 		"openMs":                openMs,
 		"hiddenRssMB":           hidden.RSSMB,
 		"hiddenPrivateMB":       hidden.PrivateMB,
+		"hiddenFootprintMB":     hidden.FootprintMB,
+		"openMsFirstShow":       samples[0]["paintMs"],
 		"childProcesses":        hidden.Processes,
 		"rssAfterTogglesMB":     after.RSSMB,
 		"processesAfterToggles": after.Processes,
@@ -248,15 +251,17 @@ type procInfo struct {
 	Link  string  `json:"link"`
 	RSSMB float64 `json:"rssMB"`
 	PPID  int     `json:"ppid,omitempty"`
+	Foot  float64 `json:"footprintMB,omitempty"`
 	Resp  int     `json:"responsible,omitempty"`
 }
 
 type memReport struct {
-	RSSMB      any
-	PrivateMB  any
-	Processes  []procInfo
-	Note       string
-	WebKitSeen []procInfo
+	RSSMB       any
+	PrivateMB   any
+	FootprintMB any
+	Processes   []procInfo
+	Note        string
+	WebKitSeen  []procInfo
 }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()/100) / 10 }

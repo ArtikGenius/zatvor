@@ -68,6 +68,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-go@v5 # for proto/ui/pixelwatch in the self-test
+        with:
+          go-version-file: proto/ui/go.mod
+          cache-dependency-path: proto/ui/go.sum
       - run: npm ci
       - name: build (Windows)
         if: runner.os == 'Windows'

@@ -195,11 +195,12 @@ fn self_test_run(app: AppHandle, rx: Receiver<(u32, String, String, Instant)>) {
         while rx.try_recv().is_ok() {}
         let tray_rect = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten());
         place(&w, tray_rect);
+        let t0_wall = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
         let t0 = Instant::now();
         let _ = w.show();
         let show_ret = t0.elapsed();
         let _ = w.eval(probe_js(i));
-        let mut sample = json!({"id": i, "showCallMs": ms(show_ret)});
+        let mut sample = json!({"id": i, "t0UnixNs": t0_wall, "showCallMs": ms(show_ret)});
         loop {
             match rx.recv_timeout(Duration::from_secs(5)) {
                 Ok((id, ve, vr, at)) if id == i => {
@@ -238,10 +239,12 @@ fn self_test_run(app: AppHandle, rx: Receiver<(u32, String, String, Instant)>) {
         "timestampUnix": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         "method": "self-test: hidden 60 s, then 20 code toggles; openMs = show() call to the page's requestAnimationFrame callback reported over IPC (median)",
         "openMs": open_ms,
+        "openMsFirstShow": samples.first().map(|s| s["paintMs"].clone()),
         "openMsMin": paint.first(),
         "openMsMax": paint.last(),
         "hiddenRssMB": hidden["rssMB"],
         "hiddenPrivateMB": hidden["privateMB"],
+        "hiddenFootprintMB": hidden["footprintMB"],
         "childProcesses": hidden["processes"],
         "rssAfterTogglesMB": after["rssMB"],
         "processesAfterToggles": after["processes"],
@@ -314,6 +317,15 @@ mod responsible {
         fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     }
     const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+    extern "C" {
+        fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
+    }
+    /// phys_footprint (what Activity Monitor shows as Memory), from rusage_info_v2.
+    pub fn footprint(pid: i32) -> Option<u64> {
+        let mut buf = [0u64; 64];
+        // RUSAGE_INFO_V2 = 2; ri_phys_footprint follows a 16-byte uuid and 7 u64s.
+        if unsafe { proc_pid_rusage(pid, 2, buf.as_mut_ptr()) } == 0 { Some(buf[9]) } else { None }
+    }
     pub fn lookup() -> Option<extern "C" fn(i32) -> i32> {
         let f = unsafe { dlsym(RTLD_DEFAULT, c"responsibility_get_pid_responsible_for_pid".as_ptr()) };
         if f.is_null() { None } else { Some(unsafe { std::mem::transmute::<*mut c_void, extern "C" fn(i32) -> i32>(f) }) }
@@ -366,16 +378,33 @@ fn process_tree_memory() -> Value {
         Some("macOS: responsibility_get_pid_responsible_for_pid not found; WebKit helper processes are NOT included")
     };
     let (mut rss, mut private) = (0u64, 0u64);
+    #[allow(unused_mut)]
+    let (mut foot, mut foot_ok) = (0u64, cfg!(target_os = "macos"));
     let mut list = Vec::new();
     for (pid, how) in &tree {
         if let Some(p) = sys.process(*pid) {
             rss += p.memory();
             private += p.virtual_memory();
-            list.push(json!({"pid": pid.as_u32(), "name": p.name().to_string_lossy(), "link": how,
-                             "rssMB": mb(p.memory())}));
+            #[allow(unused_mut)]
+            let mut e = json!({"pid": pid.as_u32(), "name": p.name().to_string_lossy(), "link": how,
+                             "ppid": p.parent().map(|x| x.as_u32()), "rssMB": mb(p.memory())});
+            #[cfg(target_os = "macos")]
+            match responsible::footprint(pid.as_u32() as i32) {
+                Some(f) => {
+                    foot += f;
+                    e["footprintMB"] = json!(mb(f));
+                }
+                None => foot_ok = false,
+            }
+            list.push(e);
         }
     }
     let mut v = json!({"rssMB": mb(rss), "processes": list});
+    v["footprintMB"] = if foot_ok { json!(mb(foot)) } else if cfg!(target_os = "macos") {
+        json!("not measured: proc_pid_rusage failed for a process in the tree")
+    } else {
+        json!("not measured: macOS only (see hiddenPrivateMB)")
+    };
     #[cfg(target_os = "macos")]
     {
         // Every WebKit helper on the machine, for cross-checking the attribution.
