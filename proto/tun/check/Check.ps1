@@ -244,6 +244,26 @@ function Show-XrayLogs([string]$Tag, [string]$Pattern) {
     }
 }
 
+# curl.exe (the per-app rule's process) should go direct, this PowerShell and
+# nslookup.exe through the tunnel. 1.1.1.1:80 through the tunnel is answered
+# by bench ("zatvor-tunnel"), direct by Cloudflare.
+function Invoke-PerApp([string]$Tag) {
+    $p = [ordered]@{}
+    $p.at = (Get-Date).ToString('HH:mm:ss.fff')
+    $p.secondsAfterTunUp = [math]::Round(((Get-Date) - $script:TunUpAt).TotalSeconds, 1)
+    $curlOut = (& curl.exe -s -i -m 10 'http://1.1.1.1/' 2>&1 | Out-String)
+    $p.curl = if ($curlOut.Length -gt 200) { $curlOut.Substring(0, 200) } else { $curlOut }
+    $p.curlDirect = ($curlOut -match '(?im)^server:\s*cloudflare') -and ($curlOut -notmatch 'zatvor-tunnel')
+    $p.powershell = Get-Http '1.1.1.1'
+    $p.powershellTunnel = ($p.powershell -like '*zatvor-tunnel*')
+    $p.nslookup = Invoke-Nslookup @('zatvor-probe.test', '1.1.1.1')
+    $p.nslookupTunnel = ($p.nslookup -match '198\.18\.0\.10')
+    $p.pass = [bool]($p.curlDirect -and $p.powershellTunnel -and $p.nslookupTunnel)
+    $p | ConvertTo-Json | Write-Host
+    Show-XrayLogs $Tag '1\.1\.1\.1:80|owner of|Unable|find local process'
+    return $p
+}
+
 function Get-TunOwner { if ($Variant -eq 'A') { $Procs['client-xray'] } else { $Procs['b'] } }
 
 try {
@@ -316,7 +336,7 @@ try {
     $t0 = Get-Date
     if ($Variant -eq 'A') {
         $cfg = Join-Path $Work 'client\config.json'
-        & (Join-Path $Bin 'a.exe') -out $cfg -name $TunName -direct-process $CurlPath -log-dir $logFwd
+        & (Join-Path $Bin 'a.exe') -out $cfg -name $TunName -direct-process $CurlPath -log-dir $logFwd -diag
         Get-Content $cfg | Write-Host
         & (Join-Path $Work 'client\xray.exe') run -test -c $cfg 2>&1 | Write-Host
         if ($LASTEXITCODE -ne 0) { throw 'client A config test failed' }
@@ -346,6 +366,7 @@ try {
         Get-NetAdapter -IncludeHidden | Format-Table -AutoSize | Out-String | Write-Host
         throw "TUN $TunName did not come up"
     }
+    $script:TunUpAt = Get-Date
     Start-Sleep -Seconds 3
     Log "TUN $TunName up after $($D.tunUpSeconds) s"
     Get-NetIPConfiguration -InterfaceAlias $TunName | Out-String | Write-Host
@@ -376,18 +397,8 @@ try {
 
     # ---------------------------------------------------------------- per-app
     Section 'per-app rule'
-    $p = [ordered]@{}
-    $curlOut = (& curl.exe -s -i -m 10 'http://1.1.1.1/' 2>&1 | Out-String)
-    $p.curl = if ($curlOut.Length -gt 300) { $curlOut.Substring(0, 300) } else { $curlOut }
-    $p.curlDirect = ($curlOut -match '(?im)^server:\s*cloudflare') -and ($curlOut -notmatch 'zatvor-tunnel')
-    $p.powershell = Get-Http '1.1.1.1'
-    $p.powershellTunnel = ($p.powershell -like '*zatvor-tunnel*')
-    $p.nslookup = Invoke-Nslookup @('zatvor-probe.test', '1.1.1.1')
-    $p.nslookupTunnel = ($p.nslookup -match '198\.18\.0\.10')
-    $R.perAppRule = [bool]($p.curlDirect -and $p.powershellTunnel -and $p.nslookupTunnel)
-    $D.perApp = $p
-    $p | ConvertTo-Json | Write-Host
-    Show-XrayLogs 'per-app' 'curl|1\.1\.1\.1|process|Unable|via direct|direct'
+    $D.perApp = Invoke-PerApp 'per-app'
+    $R.perAppRule = $D.perApp.pass
     EndSection
 
     # ---------------------------------------------------------------- throughput
@@ -417,6 +428,10 @@ try {
     $D.cpu = $cpu
     $R.cpuIdlePct = [math]::Round($sum / $wall / [Environment]::ProcessorCount * 100, 3)
     Log "cpu idle: $($cpu | ConvertTo-Json -Compress); pct of all cores $($R.cpuIdlePct)"
+    EndSection
+
+    Section 'per-app rule again (more than 60 s after TUN up)'
+    $D.perAppLate = Invoke-PerApp 'per-app-late'
     EndSection
 
     # ---------------------------------------------------------------- kill
@@ -467,7 +482,7 @@ try {
         $p = $Procs[$n]
         if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
     }
-    try { Show-XrayLogs 'final' '(?i)error|warn|fail' } catch {}
+    try { Show-XrayLogs 'final' '(?i)\[error\]|\[warning\]|ERROR|WARN|unable' } catch {}
     Save-Results
     $R | ConvertTo-Json -Depth 8 | Write-Host
 }

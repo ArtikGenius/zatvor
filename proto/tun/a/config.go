@@ -29,7 +29,11 @@ const (
 // Config builds the client config. upstream is host:port of the upstream
 // SOCKS server; directProcess is an absolute process path (forward slashes,
 // as Xray's process matcher compares them) or empty.
-func Config(tunName, upstreamHost string, upstreamPort int, directProcess, logDir string) map[string]any {
+//
+// With diag, two more rules follow the path rule, each to its own freedom
+// outbound, so the access log tells which form matched: the canonical
+// System32 path and the bare process name "curl".
+func Config(tunName, upstreamHost string, upstreamPort int, directProcess, logDir string, diag bool) map[string]any {
 	cfg := map[string]any{
 		"log": map[string]any{
 			"loglevel": "info",
@@ -69,6 +73,17 @@ func Config(tunName, upstreamHost string, upstreamPort int, directProcess, logDi
 			"outboundTag": "direct",
 		})
 	}
+	if diag {
+		outs := cfg["outbounds"].([]any)
+		for _, d := range []struct{ tag, process string }{
+			{"direct-canon", "C:/Windows/System32/curl.exe"},
+			{"direct-name", "curl"},
+		} {
+			outs = append(outs, map[string]any{"tag": d.tag, "protocol": "freedom"})
+			rules = append(rules, map[string]any{"type": "field", "process": []string{d.process}, "outboundTag": d.tag})
+		}
+		cfg["outbounds"] = outs
+	}
 	rules = append(rules, map[string]any{"type": "field", "network": "tcp,udp", "outboundTag": "proxy"})
 	cfg["routing"] = map[string]any{"domainStrategy": "AsIs", "rules": rules}
 	return cfg
@@ -81,12 +96,13 @@ func main() {
 	port := flag.Int("upstream-port", 10800, "upstream SOCKS port")
 	direct := flag.String("direct-process", "", "absolute path of a process sent direct")
 	logDir := flag.String("log-dir", ".", "directory for Xray logs")
+	diag := flag.Bool("diag", false, "add diagnostic process rules (canonical path, bare name)")
 	flag.Parse()
 	if *out == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	b, err := json.MarshalIndent(Config(*name, *host, *port, *direct, *logDir), "", "  ")
+	b, err := json.MarshalIndent(Config(*name, *host, *port, *direct, *logDir, *diag), "", "  ")
 	if err == nil {
 		err = os.WriteFile(*out, append(b, '\n'), 0o644)
 	}

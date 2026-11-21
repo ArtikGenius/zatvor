@@ -71,10 +71,14 @@ func (h *handler) NewConnectionEx(ctx context.Context, conn net.Conn, source, de
 	var err error
 	route := "proxy"
 	if h.direct != "" {
-		if path, perr := tcpOwnerPath(source.AddrPort()); perr == nil && strings.EqualFold(path, h.direct) {
-			route = "direct"
-		} else if perr != nil {
+		path, perr := tcpOwnerPath(source.AddrPort())
+		if perr != nil {
 			h.logger.Warn("process lookup ", source, ": ", perr)
+		} else {
+			h.logger.Info("owner of ", source, ": ", path)
+			if strings.EqualFold(path, h.direct) {
+				route = "direct"
+			}
 		}
 	}
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
