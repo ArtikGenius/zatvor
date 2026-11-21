@@ -1,0 +1,163 @@
+name: proto-ui
+
+# Stage 0c, task 9: tray + popup prototype, Tauri 2 vs Wails v3. No UI process
+# runs on a developer machine: both prototypes are built and measured here
+# (each one's --self-test writes metrics.json), and the macOS builds are
+# uploaded for a manual check on a real Mac (proto/ui/RESULTS.md).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'proto/ui/**'
+      - '.github/workflows/proto-ui.yml'
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.97.0"
+  NODE_VERSION: "22"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proto/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proto/ui/go.mod
+          cache-dependency-path: proto/ui/go.sum
+      - run: GOOS=windows go vet ./...
+      - run: test -z "$(gofmt -l wails shared)"
+      - name: popup makes no network requests
+        run: |
+          ! grep -nE 'https?://' shared/popup.html
+
+  tauri:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-amd64
+          - os: macos-latest
+            name: macos-universal
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: proto/ui/tauri
+    steps:
+      - uses: actions/checkout@v4
+      - name: rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          if [ "$RUNNER_OS" = macOS ]; then rustup target add aarch64-apple-darwin x86_64-apple-darwin; fi
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: proto/ui/tauri
+          key: ${{ matrix.name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+      - name: build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          npx tauri build --no-bundle
+          mkdir -p ../../../out
+          cp target/release/zatvor-proto-tauri.exe ../../../out/
+      - name: build (macOS universal .app)
+        if: runner.os == 'macOS'
+        run: |
+          npx tauri build --target universal-apple-darwin --bundles app
+          mkdir -p ../../../out
+          cp -R target/universal-apple-darwin/release/bundle/macos/ZatvorProtoTauri.app ../../../out/
+          lipo -info ../../../out/ZatvorProtoTauri.app/Contents/MacOS/zatvor-proto-tauri
+          codesign -dv ../../../out/ZatvorProtoTauri.app 2>&1 || true
+          cd ../../../out && ditto -c -k --keepParent ZatvorProtoTauri.app ZatvorProtoTauri-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proto-ui-tauri-${{ matrix.name }}
+          path: |
+            out/zatvor-proto-tauri.exe
+            out/ZatvorProtoTauri-macos-universal.zip
+          if-no-files-found: error
+      - name: self-test
+        working-directory: .
+        run: ./proto/ui/selftest.sh tauri
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proto-ui-metrics-tauri-${{ matrix.name }}
+          path: results/
+          if-no-files-found: warn
+
+  wails:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-amd64
+          - os: macos-latest
+            name: macos-universal
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: proto/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proto/ui/go.mod
+          cache-dependency-path: proto/ui/go.sum
+      - run: go vet ./...
+      - name: build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir -p ../../out
+          go build -tags production -trimpath -ldflags "-H windowsgui -s -w" -o ../../out/zatvor-proto-wails.exe ./wails
+      - name: build (macOS universal .app)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          for a in arm64 amd64; do
+            CGO_ENABLED=1 GOARCH=$a MACOSX_DEPLOYMENT_TARGET=11.0 \
+              go build -tags production -trimpath -ldflags "-s -w" -o "../../work/wails-$a" ./wails
+          done
+          app=../../out/ZatvorProtoWails.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create -output "$app/Contents/MacOS/zatvor-proto-wails" ../../work/wails-arm64 ../../work/wails-amd64
+          cp wails/macos/Info.plist "$app/Contents/Info.plist"
+          cp tauri/icons/icon.icns "$app/Contents/Resources/icon.icns"
+          codesign --force --deep -s - "$app"
+          lipo -info "$app/Contents/MacOS/zatvor-proto-wails"
+          cd ../../out && ditto -c -k --keepParent ZatvorProtoWails.app ZatvorProtoWails-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proto-ui-wails-${{ matrix.name }}
+          path: |
+            out/zatvor-proto-wails.exe
+            out/ZatvorProtoWails-macos-universal.zip
+          if-no-files-found: error
+      - name: self-test
+        working-directory: .
+        run: ./proto/ui/selftest.sh wails
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proto-ui-metrics-wails-${{ matrix.name }}
+          path: results/
+          if-no-files-found: warn
