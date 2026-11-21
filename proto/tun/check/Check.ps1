@@ -258,9 +258,9 @@ try {
 
     Section 'install binaries'
     $xray = Join-Path $Work 'xray\xray.exe'
-    foreach ($d in 'client', 'upstream') {
-        New-Item -ItemType Directory -Force (Join-Path $Work $d) | Out-Null
-        Copy-Item $xray (Join-Path $Work "$d\xray.exe") -Force
+    foreach ($dir in 'client', 'upstream') {
+        New-Item -ItemType Directory -Force (Join-Path $Work $dir) | Out-Null
+        Copy-Item $xray (Join-Path $Work "$dir\xray.exe") -Force
     }
     if ($Variant -eq 'A') {
         $zip = Join-Path $Work 'wintun-0.14.1.zip'
