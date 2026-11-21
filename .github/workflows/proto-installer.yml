@@ -116,11 +116,15 @@ jobs:
       - name: Inno Setup ${{ env.INNO_VERSION }}
         shell: pwsh
         run: |
+          # ISCC.exe has no version resource (it reads 0.0.0.0), so pin through
+          # choco (a no-op when the runner image already has this version)
+          # and print the compiler banner.
           $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-          $have = if (Test-Path $iscc) { (Get-Item $iscc).VersionInfo.ProductVersion } else { 'none' }
-          "preinstalled: $have"
-          if ("$have" -notlike "$env:INNO_VERSION*") { choco install innosetup --version $env:INNO_VERSION -y --no-progress --force }
-          "ISCC $((Get-Item $iscc).VersionInfo.ProductVersion)"
+          choco install innosetup --version $env:INNO_VERSION -y --no-progress
+          if ($LASTEXITCODE) { throw "choco $LASTEXITCODE" }
+          choco list innosetup --exact
+          (& $iscc 2>&1 | Select-Object -First 1) -join ''
+          $global:LASTEXITCODE = 0
           "ISCC=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: WiX ${{ env.WIX_VERSION }}
         shell: pwsh
