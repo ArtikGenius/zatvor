@@ -110,7 +110,7 @@ func scanPaths(paths []string, allow AllowList) ([]Finding, error) {
 // scanStaged scans the staged version of each added/changed file, not the
 // working tree, so unstaged edits cannot hide a staged secret.
 func scanStaged(allow AllowList) ([]Finding, error) {
-	list, err := exec.Command("git", "diff", "--cached", "--name-only", "--diff-filter=ACM", "-z").Output()
+	list, err := exec.Command("git", "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMR", "-z").Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff --cached: %w", err)
 	}
