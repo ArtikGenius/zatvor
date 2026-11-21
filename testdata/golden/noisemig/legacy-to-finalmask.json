@@ -1,0 +1,214 @@
+{
+  "dns": {
+    "hosts": {
+      "lkfl2.nalog.ru": "213.24.64.175",
+      "lknpd.nalog.ru": "213.24.64.181"
+    },
+    "queryStrategy": "UseIP",
+    "servers": [
+      {
+        "address": "https://77.88.8.8/dns-query",
+        "domains": [
+          "geosite:private",
+          "geosite:category-ru",
+          "domain:ru",
+          "domain:su",
+          "domain:xn--p1ai",
+          "geosite:whitelist",
+          "geosite:microsoft",
+          "geosite:apple",
+          "geosite:epicgames",
+          "geosite:riot",
+          "geosite:escapefromtarkov",
+          "geosite:steam",
+          "geosite:twitch",
+          "geosite:pinterest",
+          "geosite:faceit"
+        ]
+      },
+      {
+        "address": "https://8.8.8.8/dns-query",
+        "skipFallback": false
+      }
+    ],
+    "tag": "dns_out"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10808,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": true,
+        "userLevel": 8
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic",
+          "fakedns"
+        ],
+        "enabled": true
+      },
+      "tag": "mixed"
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 10809,
+      "protocol": "http",
+      "settings": {
+        "userLevel": 8
+      },
+      "tag": "http"
+    }
+  ],
+  "log": {
+    "loglevel": "warning"
+  },
+  "outbounds": [
+    {
+      "protocol": "hysteria",
+      "tag": "proxy",
+      "streamSettings": {
+        "finalmask": {
+          "quicParams": {
+            "congestion": "bbr"
+          },
+          "udp": [
+            {
+              "settings": {
+                "password": "REPLACE_ME_salamander_password"
+              },
+              "type": "salamander"
+            },
+            {
+              "type": "noise",
+              "settings": {
+                "reset": 0,
+                "noise": [
+                  {
+                    "type": "hex",
+                    "packet": "a3c185800001000100000000076578616d706c6503636f6d0000010001c00c000100010000105a00045db8d70e",
+                    "delay": "5-10"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "hysteriaSettings": {
+          "auth": "REPLACE_ME_hysteria2_auth",
+          "udpIdleTimeout": 60,
+          "version": 2
+        },
+        "network": "hysteria",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": [
+            "h3"
+          ],
+          "fingerprint": "",
+          "serverName": "hy2.example.com"
+        }
+      },
+      "settings": {
+        "address": "hy2.example.com",
+        "port": 8443,
+        "version": 2
+      }
+    },
+    {
+      "protocol": "freedom",
+      "settings": {
+        "redirect": ""
+      },
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "http"
+        }
+      },
+      "tag": "block"
+    }
+  ],
+  "policy": {
+    "levels": {
+      "8": {
+        "connIdle": 300,
+        "downlinkOnly": 1,
+        "handshake": 4,
+        "uplinkOnly": 1
+      }
+    },
+    "system": {
+      "statsOutboundDownlink": true,
+      "statsOutboundUplink": true
+    }
+  },
+  "remarks": "Example · Hysteria2-DNS (legacy freedom noises + dialerProxy)",
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "domain": [
+          "geosite:win-spy",
+          "geosite:torrent",
+          "geosite:category-ads"
+        ],
+        "outboundTag": "block",
+        "type": "field"
+      },
+      {
+        "domain": [
+          "geosite:google-play",
+          "geosite:github",
+          "geosite:twitch-ads",
+          "geosite:youtube",
+          "geosite:telegram"
+        ],
+        "outboundTag": "proxy",
+        "type": "field"
+      },
+      {
+        "domain": [
+          "geosite:private",
+          "geosite:category-ru",
+          "domain:ru",
+          "domain:su",
+          "domain:xn--p1ai",
+          "geosite:whitelist",
+          "geosite:microsoft",
+          "geosite:apple",
+          "geosite:epicgames",
+          "geosite:riot",
+          "geosite:escapefromtarkov",
+          "geosite:steam",
+          "geosite:twitch",
+          "geosite:pinterest",
+          "geosite:faceit"
+        ],
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "ip": [
+          "geoip:private",
+          "geoip:direct"
+        ],
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "network": "tcp,udp",
+        "outboundTag": "proxy",
+        "type": "field"
+      }
+    ]
+  },
+  "stats": {}
+}
