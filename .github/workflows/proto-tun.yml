@@ -1,0 +1,66 @@
+name: proto-tun
+
+# Stage 0c, task 8: TUN front prototype A (Xray tun inbound) vs B (sing-tun
+# -> Xray SOCKS). Live: installs a TUN adapter, routes, DNS and WFP filters
+# and kills the TUN owner, so it runs only on disposable GitHub runners.
+# Separate from ci.yml so that it does not slow every CI run.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'proto/tun/**'
+      - '.github/workflows/proto-tun.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proto/tun
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proto/tun/go.mod
+          cache-dependency-path: proto/tun/go.sum
+      - run: go vet ./...
+      - run: GOOS=windows go vet ./...
+      - run: go test ./...
+
+  tun:
+    needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [A, B]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      ZATVOR_ALLOW_LIVE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proto/tun/go.mod
+          cache-dependency-path: proto/tun/go.sum
+      - name: build tools and fetch pinned Xray
+        shell: bash
+        run: |
+          go run ./tools/xrayfetch -platform windows-amd64 -dest work/xray
+          cd proto/tun
+          for t in a b bench pcapcount; do go build -o ../../work/bin/$t.exe ./$t; done
+      - name: Check.ps1 -Variant ${{ matrix.variant }}
+        shell: pwsh
+        run: ./proto/tun/check/Check.ps1 -Variant ${{ matrix.variant }} -Work work -ResultsDir results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tun-${{ matrix.variant }}
+          path: |
+            results/
+            work/logs/
+          if-no-files-found: warn
