@@ -1,0 +1,50 @@
+<!--
+  Zatvor installer prototype, WiX Toolset v5 (stage 0c, task 10).
+  Machine-wide MSI into Program Files with an uninstall entry (spec section
+  16 Q2.9). Build:
+    wix build Package.wxs -arch x64 -d Version=0.0.1 -d SrcDir=<dir with zatvor.exe> -o zatvor-0.0.1.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- Fixed UpgradeCode + MajorUpgrade: a newer version removes the older one
+       in the same transaction, leaving one "Apps & features" entry. -->
+  <Package Name="Zatvor"
+           Manufacturer="Zatvor project"
+           Version="$(var.Version)"
+           UpgradeCode="F1EE344A-8F54-414D-96AD-5D33B283DC37"
+           Scope="perMachine"
+           Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Zatvor is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Zatvor">
+        <Component Id="ZatvorExe" Bitness="always64">
+          <File Id="ZatvorExeFile" Source="$(var.SrcDir)\zatvor.exe" KeyPath="yes" />
+          <!-- Stage 3 placeholder: the privileged helper service goes into its
+               own component here, e.g.
+               <File Id="HelperExe" Source="$(var.SrcDir)\zatvor-helper.exe" KeyPath="yes" />
+               <ServiceInstall Name="zatvor-helper" Type="ownProcess" Start="auto"
+                               ErrorControl="normal" Account="LocalSystem" />
+               <ServiceControl Id="HelperCtl" Name="zatvor-helper"
+                               Start="install" Stop="both" Remove="uninstall" Wait="yes" /> -->
+        </Component>
+        <Component Id="VersionTxt" Bitness="always64">
+          <File Id="VersionTxtFile" Source="$(var.SrcDir)\VERSION.txt" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="ZatvorShortcut" Name="Zatvor" Target="[INSTALLFOLDER]zatvor.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM" Key="Software\Zatvor" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="ZatvorExe" />
+      <ComponentRef Id="VersionTxt" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>
