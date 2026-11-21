@@ -13,3 +13,7 @@ roscomvpn geoip / geosite data
 domain-list-community (MIT)
   https://github.com/v2fly/domain-list-community
   Copyright (c) v2fly contributors.
+
+golang.org/x/sys (BSD-3-Clause)
+  https://go.googlesource.com/sys
+  Copyright 2009 The Go Authors. Go module, compiled into Zatvor binaries.
