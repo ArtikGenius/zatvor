@@ -235,6 +235,15 @@ function Get-WfpFilterCount {
     return @(Select-String -Path $f -Pattern '<name>[^<]*(Xray|xray|sing-tun)[^<]*</name>').Count
 }
 
+# Matching lines (and the tail) of the Xray and b logs, into the job log.
+function Show-XrayLogs([string]$Tag, [string]$Pattern) {
+    foreach ($f in Get-ChildItem $Logs -Filter '*.log') {
+        $m = @(Select-String -Path $f.FullName -Pattern $Pattern -ErrorAction SilentlyContinue | Select-Object -Last 40)
+        Write-Host "--- [$Tag] $($f.Name): $($m.Count) matching lines (last 40)"
+        $m | ForEach-Object { Write-Host $_.Line }
+    }
+}
+
 function Get-TunOwner { if ($Variant -eq 'A') { $Procs['client-xray'] } else { $Procs['b'] } }
 
 try {
@@ -378,6 +387,7 @@ try {
     $R.perAppRule = [bool]($p.curlDirect -and $p.powershellTunnel -and $p.nslookupTunnel)
     $D.perApp = $p
     $p | ConvertTo-Json | Write-Host
+    Show-XrayLogs 'per-app' 'curl|1\.1\.1\.1|process|Unable|via direct|direct'
     EndSection
 
     # ---------------------------------------------------------------- throughput
@@ -400,6 +410,7 @@ try {
     foreach ($n in $names) {
         $s = (Get-Process -Id $Procs[$n].Id).TotalProcessorTime.TotalSeconds - $before[$n]
         $cpu[$n] = [math]::Round($s, 3); $sum += $s
+        $cpu["$n-totalBefore"] = [math]::Round($before[$n], 3)
     }
     $cpu.wallSeconds = [math]::Round($wall, 1)
     $cpu.pctOfOneCore = [math]::Round($sum / $wall * 100, 3)
@@ -456,6 +467,7 @@ try {
         $p = $Procs[$n]
         if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
     }
+    try { Show-XrayLogs 'final' '(?i)error|warn|fail' } catch {}
     Save-Results
     $R | ConvertTo-Json -Depth 8 | Write-Host
 }
