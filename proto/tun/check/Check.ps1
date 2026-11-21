@@ -264,7 +264,44 @@ function Invoke-PerApp([string]$Tag) {
     return $p
 }
 
-function Get-TunOwner { if ($Variant -eq 'A') { $Procs['client-xray'] } else { $Procs['b'] } }
+function Get-TunOwner { $Procs[$script:OwnerName] }
+
+# Starts the process that owns the TUN (A: client Xray, B: b.exe) under Name.
+function Start-Owner([string]$Name) {
+    $script:OwnerName = $Name
+    if ($Variant -eq 'A') {
+        Start-Logged $Name (Join-Path $Work 'client\xray.exe') @('run', '-c', (Join-Path $Work 'client\config.json')) | Out-Null
+    } else {
+        Start-Logged $Name (Join-Path $Bin 'b.exe') @('-name', $TunName, '-socks', '127.0.0.1:10808', '-direct-process', $script:CurlPath) | Out-Null
+    }
+}
+
+# Waits up to 30 s for the TUN adapter to be up with its default routes.
+function Wait-TunUp {
+    for ($i = 0; $i -lt 120; $i++) {
+        $owner = Get-TunOwner
+        if ($owner.HasExited) { Log "TUN owner exited with code $($owner.ExitCode)"; return $false }
+        $ad = Get-NetAdapter -Name $TunName -ErrorAction SilentlyContinue
+        $rt = @(Get-NetRoute -InterfaceAlias $TunName -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.DestinationPrefix -match '^(0\.0\.0\.0/[01]|128\.0\.0\.0/1)$' })
+        if ($ad -and $ad.Status -eq 'Up' -and $rt.Count -gt 0) { return $true }
+        Start-Sleep -Milliseconds 250
+    }
+    return $false
+}
+
+# Exact-case path of an existing file, segment by segment as the file system
+# stores it (Xray compares process paths case-sensitively).
+function Get-CanonicalPath([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full).ToUpper()
+    $cur = $root
+    foreach ($seg in $full.Substring($root.Length).Split('\')) {
+        $hit = Get-ChildItem -LiteralPath $cur -Force | Where-Object { $_.Name -ieq $seg } | Select-Object -First 1
+        if (-not $hit) { return $full }
+        $cur = Join-Path $cur $hit.Name
+    }
+    return $cur
+}
 
 try {
     # ---------------------------------------------------------------- preflight
@@ -318,8 +355,10 @@ try {
     # Real image path of curl.exe as the OS reports it (the per-app rule key).
     $cp = Start-Process curl.exe -ArgumentList @('-s', '-m', '8', '-o', 'NUL', 'telnet://127.0.0.1:18081') -PassThru -NoNewWindow
     Start-Sleep -Milliseconds 800
-    $CurlPath = (Get-Process -Id $cp.Id).Path
+    $D.curlPathFromGetProcess = (Get-Process -Id $cp.Id).Path
     Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue
+    $CurlPath = Get-CanonicalPath $D.curlPathFromGetProcess
+    $script:CurlPath = $CurlPath
     $D.curlPath = $CurlPath
     Log "curl.exe image path: $CurlPath"
     $lb = & (Join-Path $Bin 'bench.exe') download -addr 127.0.0.1:18081 -seconds 5 | ConvertFrom-Json
@@ -336,11 +375,11 @@ try {
     $t0 = Get-Date
     if ($Variant -eq 'A') {
         $cfg = Join-Path $Work 'client\config.json'
-        & (Join-Path $Bin 'a.exe') -out $cfg -name $TunName -direct-process $CurlPath -log-dir $logFwd -diag
+        & (Join-Path $Bin 'a.exe') -out $cfg -name $TunName -direct-process $CurlPath -log-dir $logFwd
         Get-Content $cfg | Write-Host
         & (Join-Path $Work 'client\xray.exe') run -test -c $cfg 2>&1 | Write-Host
         if ($LASTEXITCODE -ne 0) { throw 'client A config test failed' }
-        Start-Logged 'client-xray' (Join-Path $Work 'client\xray.exe') @('run', '-c', $cfg) | Out-Null
+        Start-Owner 'client-xray'
     } else {
         $cfg = Join-Path $Work 'client\config.json'
         (Get-Content -Raw (Join-Path $Here '..\b\client-xray.json')).Replace('__LOG_DIR__', $logFwd) | Set-Content -Encoding utf8 $cfg
@@ -348,17 +387,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'client B xray config test failed' }
         Start-Logged 'client-xray' (Join-Path $Work 'client\xray.exe') @('run', '-c', $cfg) | Out-Null
         Start-Sleep -Seconds 2
-        Start-Logged 'b' (Join-Path $Bin 'b.exe') @('-name', $TunName, '-socks', '127.0.0.1:10808', '-direct-process', $CurlPath) | Out-Null
+        Start-Owner 'b'
     }
-    $up = $false
-    for ($i = 0; $i -lt 120; $i++) {
-        $owner = Get-TunOwner
-        if ($owner.HasExited) { Log "TUN owner exited with code $($owner.ExitCode)"; break }
-        $ad = Get-NetAdapter -Name $TunName -ErrorAction SilentlyContinue
-        $rt = @(Get-NetRoute -InterfaceAlias $TunName -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.DestinationPrefix -match '^(0\.0\.0\.0/[01]|128\.0\.0\.0/1)$' })
-        if ($ad -and $ad.Status -eq 'Up' -and $rt.Count -gt 0) { $up = $true; break }
-        Start-Sleep -Milliseconds 250
-    }
+    $up = Wait-TunUp
     $D.tunUp = $up
     $D.tunUpSeconds = [math]::Round(((Get-Date) - $t0).TotalSeconds, 2)
     Show-Log 'client-xray'; if ($Variant -eq 'B') { Show-Log 'b' }
@@ -464,12 +495,38 @@ try {
     $k | ConvertTo-Json -Depth 5 | Write-Host
     EndSection
 
+    # ---------------------------------------------------------------- restart
+    Section 'restart after kill, then kill again'
+    $rs = [ordered]@{}
+    $t1 = Get-Date
+    Start-Owner "$($script:OwnerName)-2"
+    $rs.up = Wait-TunUp
+    $rs.tunUpSeconds = [math]::Round(((Get-Date) - $t1).TotalSeconds, 2)
+    if ($rs.up) {
+        Start-Sleep -Seconds 2
+        $rs.http4 = Get-Http $ProbeHttp4
+        $rs.tunnelWorks = ($rs.http4 -like '*zatvor-tunnel*')
+        $rs.devnodesWhileUp = @(Get-PnpDevice -Class Net -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'SWD\WINTUN\*' } | ForEach-Object { "$($_.InstanceId)|$($_.Status)" })
+        Stop-Process -Id (Get-TunOwner).Id -Force
+        Start-Sleep -Seconds 5
+    }
+    $after = Get-Snapshot
+    $rs.devnodesAfter = @($after.pnp | Where-Object { $_ -like '*SWD\WINTUN\*' })
+    $D.restart = $rs
+    $rs | ConvertTo-Json -Depth 4 | Write-Host
+    EndSection
+
     # ---------------------------------------------------------------- leftovers
     Section 'adapter leftovers'
     $ad = Compare-Sets $base.adapters $after.adapters
     $pn = Compare-Sets $base.pnp $after.pnp
     $D.leftovers = [ordered]@{ adapters = $ad; pnp = $pn }
+    # Items left by two kill -9 cycles: adapters still listed (present or not),
+    # plus PnP device nodes that were not there before (a non-present Wintun
+    # devnode included). Details split them.
     $R.adapterLeftovers = @($ad.added).Count + @($pn.added).Count
+    $D.leftovers.presentAdapters = @($after.adapters | Where-Object { $_ -match "^$TunName\|" -and $_ -notmatch 'Not Present' }).Count
+    $D.leftovers.newDevnodes = @($pn.added).Count
     $D.leftovers | ConvertTo-Json -Depth 5 | Write-Host
     EndSection
 } catch {
