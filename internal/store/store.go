@@ -24,6 +24,8 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/profile"
 )
 
+const tmpPrefix = "profiles.zst.tmp-"
+
 const (
 	fileName   = "profiles.zst"
 	formatVer  = 1
@@ -39,6 +41,8 @@ type Store struct {
 	dir  string
 	aead cipher.AEAD
 	mu   sync.Mutex
+	// afterBak is a test hook run after the .bak copy, before the replace.
+	afterBak func() error
 }
 
 type document struct {
@@ -66,6 +70,12 @@ func Open(dir string, kp KeyProvider) (*Store, error) {
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
+	}
+	// Remove temp files left by a crashed Save (our own prefix only).
+	if stray, _ := filepath.Glob(filepath.Join(dir, tmpPrefix+"*")); len(stray) > 0 {
+		for _, f := range stray {
+			os.Remove(f)
+		}
 	}
 	return &Store{dir: dir, aead: aead}, nil
 }
@@ -128,41 +138,57 @@ func (s *Store) Save(subs []profile.Subscription) error {
 	out = append(out, nonce...)
 	out = s.aead.Seal(out, nonce, plain, out[:headerLen])
 
-	tmp, err := os.CreateTemp(s.dir, fileName+".tmp-*")
-	if err != nil {
+	// 1. Copy the current file to ".bak" (temp + fsync + rename); the main
+	// file is never moved, so it is present at every instant.
+	if old, err := os.ReadFile(s.path()); err == nil {
+		if err := s.writeAtomic(s.path()+".bak", old); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	tmpName := tmp.Name()
-	cleanup := func() { tmp.Close(); os.Remove(tmpName) }
-	if err := tmp.Chmod(0o600); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		cleanup()
-		return err
-	}
-	if _, err := tmp.Write(out); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if _, err := os.Stat(s.path()); err == nil {
-		if err := os.Rename(s.path(), s.path()+".bak"); err != nil {
-			os.Remove(tmpName)
+	if s.afterBak != nil {
+		if err := s.afterBak(); err != nil {
 			return err
 		}
 	}
-	if err := os.Rename(tmpName, s.path()); err != nil {
-		os.Remove(tmpName)
+	// 2. Atomically replace the main file.
+	if err := s.writeAtomic(s.path(), out); err != nil {
 		return err
 	}
+	// 3. Persist the renames where the platform supports it.
 	if d, err := os.Open(s.dir); err == nil { // best effort: persist the renames
 		d.Sync()
 		d.Close()
+	}
+	return nil
+}
+
+// writeAtomic writes data to a temp file in dir, fsyncs it and renames it over
+// dest.
+func (s *Store) writeAtomic(dest string, data []byte) error {
+	tmp, err := os.CreateTemp(s.dir, tmpPrefix+"*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	fail := func(err error) error { tmp.Close(); os.Remove(name); return err }
+	if err := tmp.Chmod(0o600); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		return fail(err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, dest); err != nil {
+		os.Remove(name)
+		return err
 	}
 	return nil
 }

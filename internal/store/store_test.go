@@ -217,3 +217,38 @@ func TestFileKey(t *testing.T) {
 type badKey struct{}
 
 func (badKey) Key() ([]byte, error) { return make([]byte, 16), nil }
+
+func TestSaveKeepsMainOnBakFailure(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+	s := open(t, dir, keyFile)
+	prev := sample(t)
+	if err := s.Save(prev); err != nil {
+		t.Fatal(err)
+	}
+	s.afterBak = func() error { return os.ErrClosed }
+	next := sample(t)
+	next[0].Title = "next"
+	if err := s.Save(next); err == nil {
+		t.Fatal("want injected failure")
+	}
+	got, err := open(t, dir, keyFile).Load()
+	if err != nil || !reflect.DeepEqual(got, prev) {
+		t.Fatalf("main file lost previous data: %v", err)
+	}
+}
+
+func TestOpenRemovesStrayTemps(t *testing.T) {
+	dir := t.TempDir()
+	stray := filepath.Join(dir, tmpPrefix+"123")
+	other := filepath.Join(dir, "unrelated.tmp")
+	os.WriteFile(stray, []byte("x"), 0o600)
+	os.WriteFile(other, []byte("x"), 0o600)
+	open(t, dir, filepath.Join(dir, "key"))
+	if _, err := os.Stat(stray); err == nil {
+		t.Fatal("stray temp kept")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatal("unrelated file removed")
+	}
+}
