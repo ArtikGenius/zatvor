@@ -34,3 +34,7 @@ func restrict(path string) error {
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
 		nil, nil, acl, nil)
 }
+
+// RestrictToUser makes path (a file or directory) accessible to the current
+// user only: a protected DACL with a single full-control ACE.
+func RestrictToUser(path string) error { return restrict(path) }
