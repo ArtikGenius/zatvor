@@ -7,3 +7,4 @@ brief/
 /third_party/xray/bin/
 node_modules/
 target/
+third_party/geo/files/

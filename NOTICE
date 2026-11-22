@@ -6,13 +6,20 @@ Xray-core (MPL-2.0)
   Shipped as an unmodified binary. Source and licence are at the URL above.
 
 roscomvpn geoip / geosite data
-  https://github.com/hydraponique/roscomvpn-geoip
-  https://github.com/hydraponique/roscomvpn-geosite
+  https://github.com/hydraponique/roscomvpn-geoip  release 202611221113
+  https://github.com/hydraponique/roscomvpn-geosite  release 202610120948
   These repositories carry no licence file. Use is a known and accepted risk.
+  Downloaded at build time with pinned SHA-256 (third_party/geo/pin.json).
+
+v2fly geoip (CC-BY-SA-4.0)
+  https://github.com/v2fly/geoip  release 202611080027
+  geoip.dat, downloaded at build time with a pinned SHA-256. Used as the
+  fallback source when roscomvpn has no such tag.
 
 domain-list-community (MIT)
-  https://github.com/v2fly/domain-list-community
-  Copyright (c) v2fly contributors.
+  https://github.com/v2fly/domain-list-community  release 20261122062944
+  Copyright (c) v2fly contributors. dlc.dat, downloaded at build time with a
+  pinned SHA-256; used as the fallback geosite.
 
 golang.org/x/sys (BSD-3-Clause)
   https://go.googlesource.com/sys

@@ -42,6 +42,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/cache@v4
+        with:
+          path: third_party/geo/files
+          key: geo-${{ hashFiles('third_party/geo/pin.json') }}
+      - run: go run ./tools/geofetch -dest third_party/geo/files
       - run: go run ./tools/xrayfetch -platform ${{ matrix.platform }} -dest third_party/xray/bin/${{ matrix.platform }}
       - run: echo "ZATVOR_XRAY=$GITHUB_WORKSPACE/third_party/xray/bin/${{ matrix.platform }}/${{ matrix.exe }}" >> "$GITHUB_ENV"
       - run: go vet -tags xrayint ./...
@@ -71,6 +76,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/cache@v4
+        with:
+          path: third_party/geo/files
+          key: geo-${{ hashFiles('third_party/geo/pin.json') }}
+      - run: go run ./tools/geofetch -dest third_party/geo/files
       - run: go vet -tags systemtest ./...
       - run: go test -tags systemtest -v ${{ matrix.pkgs }}
 
