@@ -35,6 +35,19 @@ type Reverter interface {
 	Restore(target string, prev json.RawMessage) error
 }
 
+// ConditionalRestorer is an optional Reverter extension. RevertAll calls
+// RestoreIf instead of Restore, passing the entry's Applied, so the reverter
+// can check again at its own write that the target still holds what we
+// applied (a file can change between RevertAll's check and the rename).
+type ConditionalRestorer interface {
+	RestoreIf(target string, applied, prev json.RawMessage) error
+}
+
+// ErrChangedByOther, returned (wrapped) by Restore or RestoreIf, says the
+// target no longer holds what we applied: the entry is closed as
+// SkippedChangedByOther and the other value is kept.
+var ErrChangedByOther = errors.New("journal: target changed by someone else")
+
 type Outcome string
 
 const (
@@ -316,11 +329,21 @@ func (j *Journal) RevertAll(rs map[string]Reverter) []RevertResult {
 		}
 		switch {
 		case bytes.Equal(canon(cur), canon(e.Applied)):
-			if err := rv.Restore(e.Target, e.Prev); err != nil {
+			var err error
+			if cr, ok := rv.(ConditionalRestorer); ok {
+				err = cr.RestoreIf(e.Target, e.Applied, e.Prev)
+			} else {
+				err = rv.Restore(e.Target, e.Prev)
+			}
+			switch {
+			case errors.Is(err, ErrChangedByOther):
+				r.Outcome = SkippedChangedByOther
+			case err != nil:
 				fail(err)
 				continue
+			default:
+				r.Outcome = Restored
 			}
-			r.Outcome = Restored
 		case bytes.Equal(canon(cur), canon(e.Prev)):
 			r.Outcome = Restored // already reverted; the crash hit before Done
 		default:

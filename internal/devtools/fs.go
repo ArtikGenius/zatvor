@@ -36,6 +36,9 @@ type WriteOpts struct {
 	Perm   fs.FileMode // mode of a new file; an existing file keeps its own
 	Expect Version     // the Version the caller read; the write fails with ErrChanged otherwise
 	Backup bool        // keep a one-time copy of the old file at <file>.zatvor.bak
+	// Delete removes the file instead of writing it, with the same Expect
+	// checks. A symlink is never deleted: data is written through it.
+	Delete bool
 }
 
 // FS is the file access devtools needs. The real one is OSFS; in safe mode
@@ -61,8 +64,12 @@ type FS interface {
 // ErrChanged reports that a file changed between our read and our write.
 var ErrChanged = errors.New("devtools: the file changed while it was being updated")
 
+// errBrokenLink reports a symlink whose target does not exist; we neither
+// read through it nor replace it.
+var errBrokenLink = errors.New("devtools: broken symlink")
+
 type osFS struct {
-	beforeRename func(path string) // test hook: runs between the temp write and the last check
+	beforeRename func(path string) // test hook, given the caller's path: runs between the temp write and the last check
 }
 
 // OSFS returns the FS of the real file system.
@@ -77,6 +84,9 @@ func (*osFS) ReadFile(path string) ([]byte, Version, error) { return readVersion
 func readVersion(path string) ([]byte, Version, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
+		if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&fs.ModeSymlink != 0 {
+			return nil, Version{}, fmt.Errorf("%s: %w", path, errBrokenLink)
+		}
 		return nil, Version{}, nil
 	}
 	if err != nil {
@@ -102,6 +112,21 @@ func (*osFS) DirExists(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
+// remove deletes path after the same two Expect checks as a write.
+func (o *osFS) remove(path string, expect Version) error {
+	for i := range 2 {
+		if i == 1 && o.beforeRename != nil {
+			o.beforeRename(path)
+		}
+		if _, v, err := readVersion(path); err != nil {
+			return err
+		} else if !v.equal(expect) {
+			return fmt.Errorf("%s: %w", path, ErrChanged)
+		}
+	}
+	return o.Remove(path)
+}
+
 func (*osFS) Remove(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
@@ -121,19 +146,35 @@ func resolve(path string) (string, error) {
 	}
 	r, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return "", fmt.Errorf("devtools: %s is a broken symlink: %w", path, err)
+		return "", fmt.Errorf("%s: %w: %v", path, errBrokenLink, err)
 	}
 	return r, nil
 }
 
 // WriteFile writes a temp file next to the resolved target, fsyncs it,
 // checks size, mtime and SHA-256 against o.Expect once more and renames it
-// over the target. What remains is the short window between that last
-// check and the rename; an editor saving inside it would lose its write.
+// over the target. The SHA-256 makes the check content-based, so a coarse
+// mtime cannot hide a racing write. What remains is the short window
+// between that last check and the rename; an editor saving inside it
+// would lose its write.
+//
+// The rename makes a new file: the mode bits are copied, but on Windows an
+// explicit ACL, the hidden/read-only/system attributes and alternate data
+// streams of the old file are not (the new one inherits the directory's
+// ACL; a read-only target makes the rename fail, writing nothing), and a
+// hard link to the old file keeps the old content. Symlinks are followed,
+// so the link stays a link.
 func (o *osFS) WriteFile(path string, data []byte, w WriteOpts) error {
 	target, err := resolve(path)
 	if err != nil {
 		return err
+	}
+	if w.Delete {
+		// Decided on the path itself: EvalSymlinks also respells plain
+		// paths (/var → /private/var, 8.3 names → long names).
+		if fi, err := os.Lstat(path); err == nil && fi.Mode()&fs.ModeSymlink == 0 {
+			return o.remove(path, w.Expect)
+		}
 	}
 	cur, ver, err := readVersion(target)
 	if err != nil {
@@ -176,7 +217,7 @@ func (o *osFS) WriteFile(path string, data []byte, w WriteOpts) error {
 		return err
 	}
 	if o.beforeRename != nil {
-		o.beforeRename(target)
+		o.beforeRename(path)
 	}
 	if _, again, err := readVersion(target); err != nil || !again.equal(w.Expect) {
 		os.Remove(name)
@@ -295,6 +336,13 @@ func (r *Recorder) WriteFile(path string, data []byte, w WriteOpts) error {
 	}
 	if !ver.equal(w.Expect) {
 		return fmt.Errorf("%s: %w", path, ErrChanged)
+	}
+	if w.Delete {
+		if err := r.record("file.remove", recWrite{Path: path}); err != nil {
+			return err
+		}
+		r.files[path] = nil
+		return nil
 	}
 	sum := sha256.Sum256(data)
 	if err := r.record("file.write", recWrite{Path: path, Bytes: len(data), SHA256: hex.EncodeToString(sum[:]), Backup: w.Backup && ver.Exists}); err != nil {

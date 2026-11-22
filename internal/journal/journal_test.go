@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -340,5 +341,58 @@ func TestCanonKeepsLargeIntegers(t *testing.T) {
 	b := canon(json.RawMessage(`{"n":9007199254740992}`))
 	if bytes.Equal(a, b) {
 		t.Fatal("large integers collapsed")
+	}
+}
+
+// condRev restores only while the target still holds applied, as a file
+// reverter re-checks at its write; changed simulates a write by someone else
+// between RevertAll's check and the restore.
+type condRev struct {
+	*fakeRev
+	changed bool
+	gotApp  string
+}
+
+func (c *condRev) RestoreIf(t string, applied, prev json.RawMessage) error {
+	c.gotApp = string(applied)
+	if c.changed {
+		return fmt.Errorf("target moved on: %w", ErrChangedByOther)
+	}
+	return c.Restore(t, prev)
+}
+
+func TestRestoreIfGetsAppliedAndChangedByOtherIsSkipped(t *testing.T) {
+	j, _ := open(t)
+	c := &condRev{fakeRev: newFake()}
+	c.vals["p"] = json.RawMessage(`{"a":2}`)
+	mustBegin(t, j, entry("k", "p", `{"a":1}`, `{"a":2}`))
+	res := j.RevertAll(map[string]Reverter{"k": c})
+	if len(res) != 1 || res[0].Outcome != Restored || c.gotApp != `{"a":2}` {
+		t.Fatalf("%+v applied=%s", res, c.gotApp)
+	}
+
+	c = &condRev{fakeRev: newFake(), changed: true}
+	c.vals["p"] = json.RawMessage(`{"a":2}`)
+	mustBegin(t, j, entry("k", "p", `{"a":1}`, `{"a":2}`))
+	res = j.RevertAll(map[string]Reverter{"k": c})
+	if len(res) != 1 || res[0].Outcome != SkippedChangedByOther || res[0].Err != nil {
+		t.Fatalf("%+v", res)
+	}
+	if len(c.writes) != 0 {
+		t.Fatal("wrote over a foreign value")
+	}
+	if p, _ := j.Pending(); len(p) != 0 {
+		t.Fatal("a skipped entry must be closed")
+	}
+}
+
+func TestPlainRestoreChangedByOtherIsSkipped(t *testing.T) {
+	j, _ := open(t)
+	f := newFake()
+	f.vals["p"] = json.RawMessage(`{"a":2}`)
+	f.restoreEr = fmt.Errorf("x: %w", ErrChangedByOther)
+	mustBegin(t, j, entry("k", "p", `{"a":1}`, `{"a":2}`))
+	if res := j.RevertAll(map[string]Reverter{"k": f}); len(res) != 1 || res[0].Outcome != SkippedChangedByOther {
+		t.Fatalf("%+v", res)
 	}
 }

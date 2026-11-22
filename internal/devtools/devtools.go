@@ -43,6 +43,9 @@ const (
 	CodeUnsupported = "devtools_unsupported_file"
 	// CodeIO: reading, journaling or writing failed.
 	CodeIO = "devtools_io"
+	// CodeChangedByOther: a revert found our part of the file changed by
+	// someone else and left it alone (wraps journal.ErrChangedByOther).
+	CodeChangedByOther = "devtools_changed_by_other"
 )
 
 // Error is a failure on one target.
@@ -93,10 +96,13 @@ type spec struct {
 	blk  func(stateFile string) string        // shell: our block
 	unit string                               // JSON: indentation step of a new file
 	perm fs.FileMode                          // mode of a new file
+	// policy: create a missing file only when the Windows PowerShell 5.1
+	// execution policy lets profiles run (R31).
+	policy bool
 }
 
 var specs = []*spec{
-	{name: "pwsh5", nl: "\r\n", perm: 0o644, blk: pwshBlock, path: func(r Roots) string {
+	{name: "pwsh5", nl: "\r\n", perm: 0o644, blk: pwshBlock, policy: true, path: func(r Roots) string {
 		return under(r.Documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
 	}},
 	{name: "pwsh7", nl: "\r\n", perm: 0o644, blk: pwshBlock, path: func(r Roots) string {
@@ -137,12 +143,35 @@ func specNamed(name string) *spec {
 	return nil
 }
 
-// current reads our part of the file.
-func (s *spec) current(data []byte) (json.RawMessage, error) {
+// current reads our part of the file; exists says whether it exists.
+func (s *spec) current(data []byte, exists bool) (json.RawMessage, error) {
 	if s.json {
-		return newJSONDoc(data, s.unit).projection(s.ptrs)
+		return newJSONDoc(data, s.unit).projection(s.ptrs, exists)
 	}
-	return shellCurrent(data)
+	return shellCurrent(data, exists)
+}
+
+// exists reads the exists flag of a projection.
+func exists(p json.RawMessage) bool {
+	var v struct {
+		Exists bool `json:"exists"`
+	}
+	return json.Unmarshal(p, &v) == nil && v.Exists
+}
+
+// ownPrev is the Prev that Enable journals. Every zatvor block is ours,
+// even one the journal lost, so a profile's Prev never holds a block.
+func (s *spec) ownPrev(prev json.RawMessage) json.RawMessage {
+	if s.json {
+		return prev
+	}
+	var p shellProjection
+	if json.Unmarshal(prev, &p) != nil {
+		return prev
+	}
+	p.Block = ""
+	b, _ := json.Marshal(p)
+	return b
 }
 
 // apply returns data with our part set to want (a projection).
@@ -173,9 +202,9 @@ func (s *spec) ours(r Roots, port int) json.RawMessage {
 		for ptr, v := range s.vals("http://127.0.0.1:" + strconv.Itoa(port)) {
 			keys[ptr], _ = json.Marshal(v)
 		}
-		p = jsonProjection{Keys: keys}
+		p = jsonProjection{Keys: keys, Exists: true}
 	} else {
-		p = shellProjection{Block: s.blk(r.StateFile)}
+		p = shellProjection{Block: s.blk(r.StateFile), Exists: true}
 	}
 	b, _ := json.Marshal(p)
 	return b
@@ -199,13 +228,13 @@ func (s *spec) empty(cur json.RawMessage) bool {
 	return json.Unmarshal(cur, &p) == nil && p.Block == ""
 }
 
-// projectionOf is the projection of data as the named target's file.
+// projectionOf is the projection of data as the named target's existing file.
 func projectionOf(name string, data []byte) (json.RawMessage, error) {
 	s := specNamed(name)
 	if s == nil {
 		return nil, fmt.Errorf("devtools: unknown target %q", name)
 	}
-	return s.current(data)
+	return s.current(data, true)
 }
 
 // canon compares projections the way the journal does.
@@ -230,6 +259,8 @@ func classify(target string, err error) error {
 		return err
 	case errors.Is(err, ErrChanged):
 		return &Error{Code: CodeConflict, Target: target, Err: err}
+	case errors.Is(err, errBrokenLink):
+		return &Error{Code: CodeUnsupported, Target: target, Err: err}
 	}
 	return &Error{Code: CodeIO, Target: target, Err: err}
 }
@@ -241,35 +272,52 @@ type beginFunc func(prev, applied json.RawMessage) (finish func(written bool) er
 // write makes our part of the file at path equal want. It reads, computes,
 // journals (when begin is set) and writes with the Version it read; when
 // the file changed meanwhile it starts over, up to maxAttempts times, and
-// then returns CodeConflict having written nothing.
-func write(fsys FS, s *spec, path string, want json.RawMessage, begin beginFunc) error {
+// then returns CodeConflict having written nothing. It reports whether it
+// wrote.
+//
+// A revert passes expect, the Applied it is undoing: every attempt first
+// checks that our part still equals it, so a value the owning app wrote
+// after RevertAll's check is never overwritten (CodeChangedByOther, which
+// wraps journal.ErrChangedByOther). A revert to a Prev without the file
+// deletes the file when what is left is exactly what creating it left.
+func write(fsys FS, s *spec, path string, want, expect json.RawMessage, begin beginFunc) (bool, error) {
 	for range maxAttempts {
 		data, ver, err := fsys.ReadFile(path)
 		if err != nil {
-			return &Error{Code: CodeIO, Target: s.name, Err: err}
+			return false, classify(s.name, err)
 		}
-		prev, err := s.current(data)
+		prev, err := s.current(data, ver.Exists)
 		if err != nil {
-			return &Error{Code: CodeUnsupported, Target: s.name, Err: err}
+			return false, &Error{Code: CodeUnsupported, Target: s.name, Err: err}
 		}
 		if canon(prev) == canon(want) {
-			return nil
+			return false, nil
+		}
+		if expect != nil && canon(prev) != canon(expect) {
+			return false, &Error{Code: CodeChangedByOther, Target: s.name, Err: fmt.Errorf("%s: %w", path, journal.ErrChangedByOther)}
 		}
 		out, err := s.apply(data, want)
 		if err != nil {
-			return &Error{Code: CodeUnsupported, Target: s.name, Err: err}
+			return false, &Error{Code: CodeUnsupported, Target: s.name, Err: err}
 		}
-		applied, err := s.current(out)
+		del := false
+		if expect != nil && ver.Exists && !exists(want) {
+			if created, err := s.apply(nil, expect); err == nil {
+				residue, err := s.apply(created, want)
+				del = err == nil && bytes.Equal(out, residue)
+			}
+		}
+		applied, err := s.current(out, !del)
 		if err != nil {
-			return &Error{Code: CodeUnsupported, Target: s.name, Err: err}
+			return false, &Error{Code: CodeUnsupported, Target: s.name, Err: err}
 		}
 		var finish func(bool) error
 		if begin != nil {
 			if finish, err = begin(prev, applied); err != nil {
-				return &Error{Code: CodeIO, Target: s.name, Err: fmt.Errorf("journal: %w", err)}
+				return false, &Error{Code: CodeIO, Target: s.name, Err: fmt.Errorf("journal: %w", err)}
 			}
 		}
-		err = fsys.WriteFile(path, out, WriteOpts{Perm: s.perm, Expect: ver, Backup: true})
+		err = fsys.WriteFile(path, out, WriteOpts{Perm: s.perm, Expect: ver, Backup: !del, Delete: del})
 		if finish != nil {
 			// Nothing was written: close the entry, there is nothing to revert.
 			if ferr := finish(err == nil); ferr != nil && err != nil {
@@ -277,13 +325,23 @@ func write(fsys FS, s *spec, path string, want json.RawMessage, begin beginFunc)
 			}
 		}
 		if err == nil {
-			return nil
+			return true, nil
 		}
 		if !errors.Is(err, ErrChanged) {
-			return classify(s.name, err)
+			return false, classify(s.name, err)
 		}
 	}
-	return &Error{Code: CodeConflict, Target: s.name, Err: fmt.Errorf("%s kept changing during %d attempts; nothing was written", path, maxAttempts)}
+	return false, &Error{Code: CodeConflict, Target: s.name, Err: fmt.Errorf("%s kept changing during %d attempts; nothing was written", path, maxAttempts)}
+}
+
+// policyAllows reports whether a Windows PowerShell execution policy runs
+// a local, unsigned profile.
+func policyAllows(p string) bool {
+	switch strings.ToLower(p) {
+	case "remotesigned", "unrestricted", "bypass":
+		return true
+	}
+	return false
 }
 
 // Manager enables and disables developer-tool routing.
@@ -292,6 +350,9 @@ type Manager struct {
 	j     *journal.Journal
 	fs    FS
 	paths map[string]string // spec name → absolute path
+	// policy returns the effective Windows PowerShell 5.1 execution
+	// policy, or "" where there is none (not Windows).
+	policy func() string
 
 	mu        sync.Mutex
 	conflicts map[string]string      // target → why the last Enable could not write it
@@ -301,7 +362,7 @@ type Manager struct {
 // New returns a Manager over the files under roots. j journals every change
 // of a user file; fs is OSFS, or a Recorder in safe mode.
 func New(roots Roots, j *journal.Journal, fsys FS) *Manager {
-	m := &Manager{roots: roots, j: j, fs: fsys, paths: map[string]string{}, conflicts: map[string]string{}}
+	m := &Manager{roots: roots, j: j, fs: fsys, paths: map[string]string{}, conflicts: map[string]string{}, policy: executionPolicy}
 	for _, s := range specs {
 		p := s.path(roots)
 		if a, err := filepath.Abs(p); err == nil && p != "" {
@@ -316,8 +377,11 @@ func targetKey(name, path string) string { return name + ":" + path }
 
 // Enable routes every installed tool through 127.0.0.1:port: it journals and
 // writes the profile blocks and settings keys, and writes the wrappers. A
-// tool whose directory does not exist is skipped (Status: Missing). The
-// error joins one *Error per target that failed; the others are enabled.
+// tool whose directory does not exist is skipped (Status: Missing), and so
+// is a missing Windows PowerShell 5.1 profile under an execution policy that
+// would not run it. The error joins one *Error per target that failed; the
+// others are enabled. Enabling again with another port adds a second entry
+// per file; the revert goes newest first, so both unwind.
 func (m *Manager) Enable(port int) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("devtools: invalid port %d", port)
@@ -334,13 +398,13 @@ func (m *Manager) Enable(port int) error {
 			continue
 		}
 		_, ver, err := m.fs.ReadFile(path)
-		if err == nil && !ver.Exists && !m.fs.DirExists(filepath.Dir(path)) {
+		if err == nil && !ver.Exists && (!m.fs.DirExists(filepath.Dir(path)) || s.policy && !policyAllows(m.policy())) {
 			delete(m.conflicts, s.name)
-			continue // not installed: never create the tool's directory
+			continue // not installed (never create the tool's directory), or a profile that would not run
 		}
 		key := targetKey(s.name, path)
 		begin := func(prev, applied json.RawMessage) (func(bool) error, error) {
-			id, err := m.j.Begin(journal.Entry{Kind: Kind, Target: key, Prev: prev, Applied: applied})
+			id, err := m.j.Begin(journal.Entry{Kind: Kind, Target: key, Prev: s.ownPrev(prev), Applied: applied})
 			if err != nil {
 				return nil, err
 			}
@@ -351,7 +415,11 @@ func (m *Manager) Enable(port int) error {
 				return m.j.Done(id)
 			}, nil
 		}
-		if err := write(m.fs, s, path, s.ours(m.roots, port), begin); err != nil {
+		wrote, err := write(m.fs, s, path, s.ours(m.roots, port), nil, begin)
+		if err == nil && !wrote && !s.json {
+			err = m.adopt(s, key, path)
+		}
+		if err != nil {
 			m.conflicts[s.name] = err.Error()
 			errs = append(errs, err)
 			continue
@@ -362,6 +430,33 @@ func (m *Manager) Enable(port int) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// adopt journals a profile that already holds exactly our block but has no
+// pending entry (the journal was lost): every zatvor block is ours, so
+// Disable must remove it.
+func (m *Manager) adopt(s *spec, key, path string) error {
+	pending, err := m.j.Pending()
+	if err != nil {
+		return &Error{Code: CodeIO, Target: s.name, Err: err}
+	}
+	for _, e := range pending {
+		if e.Kind == Kind && e.Target == key {
+			return nil
+		}
+	}
+	data, ver, err := m.fs.ReadFile(path)
+	if err != nil {
+		return classify(s.name, err)
+	}
+	cur, err := s.current(data, ver.Exists)
+	if err != nil || s.empty(cur) {
+		return nil
+	}
+	if _, err := m.j.Begin(journal.Entry{Kind: Kind, Target: key, Prev: s.ownPrev(cur), Applied: cur}); err != nil {
+		return &Error{Code: CodeIO, Target: s.name, Err: fmt.Errorf("journal: %w", err)}
+	}
+	return nil
 }
 
 func (m *Manager) writeWrappers() error {
@@ -450,8 +545,7 @@ func (m *Manager) Status() []Target {
 	}
 	for _, tool := range wrappedTools {
 		t := Target{Name: tool, Path: m.roots.BinDir, State: m.wrapperState(tool)}
-		if tool == "codex" {
-			cfg := filepath.Join(m.roots.Home, ".codex", "config.toml")
+		if cfg := under(m.roots.Home, ".codex", "config.toml"); tool == "codex" && cfg != "" {
 			if data, ver, err := m.fs.ReadFile(cfg); err == nil && ver.Exists && respectsSystemProxy(data) {
 				t.Note = cfg + " sets respect_system_proxy = true: Codex then follows the system proxy and ignores HTTPS_PROXY from this wrapper"
 			}
@@ -472,7 +566,14 @@ func (m *Manager) fileState(s *spec, path string, applied map[string]json.RawMes
 	if !ver.Exists && !m.fs.DirExists(filepath.Dir(path)) {
 		return Missing, filepath.Dir(path) + " does not exist"
 	}
-	cur, err := s.current(data)
+	if !ver.Exists && s.policy {
+		if p := m.policy(); p == "" {
+			return Missing, "Windows PowerShell 5.1 is not available here"
+		} else if !policyAllows(p) {
+			return Missing, "execution policy prevents profiles (" + p + "); an existing profile would still be edited"
+		}
+	}
+	cur, err := s.current(data, ver.Exists)
 	if err != nil {
 		return Conflict, "cannot edit the file safely: " + err.Error()
 	}
@@ -481,6 +582,9 @@ func (m *Manager) fileState(s *spec, path string, applied map[string]json.RawMes
 	}
 	if a, ok := applied[targetKey(s.name, path)]; ok {
 		if canon(cur) == canon(a) {
+			if !s.json && !blockIsLast(data) {
+				return On, "the Zatvor block is not the last thing in the profile; a prompt function defined after it turns the routing off"
+			}
 			return On, ""
 		}
 		return Conflict, "changed by another program after Zatvor set it; Disable will leave it as it is"
@@ -491,7 +595,7 @@ func (m *Manager) fileState(s *spec, path string, applied map[string]json.RawMes
 	case s.json:
 		return Off, "the file already sets a proxy; Enable replaces it and Disable puts it back"
 	}
-	return Conflict, "holds a zatvor block that is not in the journal; Enable replaces it"
+	return Conflict, "holds a Zatvor block that is not journaled; Enable takes it over and Disable removes it"
 }
 
 func (m *Manager) wrapperState(tool string) State {
@@ -555,18 +659,26 @@ func (r reverter) Current(target string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, _, err := r.fs.ReadFile(path)
+	data, ver, err := r.fs.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return s.current(data)
+	return s.current(data, ver.Exists)
 }
 
-// Restore puts our part of the file back to prev and keeps every other byte.
+// Restore puts our part of the file back to prev and keeps every other
+// byte. RevertAll calls RestoreIf instead.
 func (r reverter) Restore(target string, prev json.RawMessage) error {
+	return r.RestoreIf(target, nil, prev)
+}
+
+// RestoreIf is Restore that, at every attempt, first checks that our part
+// still equals applied (journal.ConditionalRestorer).
+func (r reverter) RestoreIf(target string, applied, prev json.RawMessage) error {
 	s, path, err := parseTarget(target)
 	if err != nil {
 		return err
 	}
-	return write(r.fs, s, path, prev, nil)
+	_, err = write(r.fs, s, path, prev, applied, nil)
+	return err
 }

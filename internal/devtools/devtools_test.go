@@ -55,7 +55,15 @@ func newEnv(t *testing.T, dirs ...string) *env {
 		t.Fatal(err)
 	}
 	fs := &osFS{}
-	return &env{t: t, roots: r, j: j, fs: fs, m: New(r, j, fs)}
+	return &env{t: t, roots: r, j: j, fs: fs, m: testManager(r, j, fs)}
+}
+
+// testManager is New with an execution policy that lets Windows
+// PowerShell 5.1 load profiles, so pwsh5 behaves the same on every OS.
+func testManager(r Roots, j *journal.Journal, fs FS) *Manager {
+	m := New(r, j, fs)
+	m.policy = func() string { return "RemoteSigned" }
+	return m
 }
 
 func (e *env) target(name string) Target {
@@ -209,8 +217,29 @@ func TestMissingAndNewFiles(t *testing.T) {
 		t.Errorf("new .bashrc: want LF; got %q", bashrc)
 	}
 	mustDisable(t, e.m)
-	if b := read(t, e.path("pwsh5")); len(b) != 0 {
-		t.Errorf("created profile after Disable: %q, want empty", b)
+	for _, n := range []string{"pwsh5", "bash"} {
+		if _, err := os.Stat(e.path(n)); !os.IsNotExist(err) {
+			t.Errorf("%s: the file we created was not deleted on Disable (%v)", n, err)
+		}
+	}
+}
+
+// R30: a file we created goes on Disable only if it holds nothing else.
+func TestCreatedFileDeletedOnlyWhenUntouched(t *testing.T) {
+	e := newEnv(t, "home/.claude")
+	mustEnable(t, e.m)
+	claude := e.path("claude")
+	if !json.Valid(read(t, claude)) {
+		t.Fatalf("new settings.json is not JSON: %s", read(t, claude))
+	}
+	bashrc := e.path("bash")
+	put(t, bashrc, append(read(t, bashrc), []byte("alias g=git\n")...))
+	mustDisable(t, e.m)
+	if _, err := os.Stat(claude); !os.IsNotExist(err) {
+		t.Errorf("created settings.json not deleted: %v", err)
+	}
+	if got := string(read(t, bashrc)); got != "alias g=git\n" {
+		t.Errorf("created .bashrc with a user line: %q, want only the user's line", got)
 	}
 }
 
@@ -387,6 +416,38 @@ func TestRaceRetryNeverClobbers(t *testing.T) {
 	})
 }
 
+// The macOS case (/var is a link to /private/var) and a redirected
+// Documents folder: the race is seen through a symlinked parent too.
+func TestRaceSeenThroughSymlinkedParent(t *testing.T) {
+	e := newEnv(t)
+	realDocs := filepath.Join(t.TempDir(), "real-docs")
+	if err := os.MkdirAll(filepath.Join(realDocs, "WindowsPowerShell"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "Documents")
+	symlinkOrSkip(t, realDocs, link)
+	r := e.roots
+	r.Documents = link
+	m := testManager(r, e.j, e.fs)
+	path := filepath.Join(link, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+	orig := fixture(t, "profile_crlf_bom.ps1")
+	put(t, path, orig)
+	n := 0
+	e.fs.beforeRename = func(p string) {
+		if p != path {
+			return
+		}
+		n++
+		put(t, path, append(append([]byte(nil), orig...), []byte(strings.Repeat("#", n)+"\r\n")...))
+	}
+	if err := m.Enable(testPort); !hasCode(err, "pwsh5", CodeConflict) {
+		t.Fatalf("Enable = %v, want %s for pwsh5 (hook ran %d times)", err, CodeConflict, n)
+	}
+	if got := read(t, path); !bytes.HasSuffix(got, []byte("###\r\n")) || bytes.Contains(got, []byte(beginMarker)) {
+		t.Errorf("the other writer's last bytes were not kept: %q", got)
+	}
+}
+
 func pendingFor(t *testing.T, j *journal.Journal, path string) []journal.Entry {
 	t.Helper()
 	p, err := j.Pending()
@@ -517,17 +578,19 @@ echo "4:$PROMPT_COMMAND"
 		state := filepath.Join(dir, "state")
 		put(t, state, []byte(testProxy))
 		script := filepath.Join(dir, "t.ps1")
-		body := "function prompt { 'user> ' }\r\n" + strings.ReplaceAll(pwshBlock(state), "\n", "\r\n") +
+		body := "function prompt { $global:seen = $?; 'user> ' }\r\n" + strings.ReplaceAll(pwshBlock(state), "\n", "\r\n") +
 			"$p = prompt\r\n\"1:$p|$env:HTTPS_PROXY|$env:NO_PROXY\"\r\n" +
-			"Set-Content -LiteralPath '" + state + "' -Value '' -NoNewline\r\n" +
+			"Set-Content -LiteralPath '" + state + "' -Value 'http://evil.example:1' -NoNewline\r\n" +
 			"[IO.File]::SetLastWriteTimeUtc('" + state + "', [DateTime]::UtcNow.AddMinutes(1))\r\n" +
-			"$null = prompt\r\n\"2:$([string]::IsNullOrEmpty($env:HTTPS_PROXY))\"\r\n"
+			"$null = prompt\r\n\"2:$([string]::IsNullOrEmpty($env:HTTPS_PROXY))\"\r\n" +
+			"Get-Item -LiteralPath 'zatvor-no-such-item' -ErrorAction SilentlyContinue\r\n" +
+			"$null = prompt\r\n\"3:$global:seen\"\r\n"
 		put(t, script, []byte(body))
 		out, err := exec.Command(shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script).CombinedOutput()
 		if err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
-		want := "1:user> |" + testProxy + "|localhost,127.0.0.1,::1\n2:True\n"
+		want := "1:user> |" + testProxy + "|localhost,127.0.0.1,::1\n2:True\n3:False\n"
 		if got := strings.ReplaceAll(string(out), "\r\n", "\n"); got != want {
 			t.Errorf("PowerShell block output:\n%s\nwant:\n%s", got, want)
 		}
@@ -581,6 +644,47 @@ func TestCodexRespectSystemProxyNote(t *testing.T) {
 	}
 }
 
+// cleanEnv is the test process environment without the variables the
+// wrappers and blocks set, plus PATH and extra.
+func cleanEnv(path string, extra ...string) []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(k) {
+		case "PATH", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ZATVOR_WRAPPED":
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(append(out, "PATH="+path), extra...)
+}
+
+// wrapperCmds are the wrapper invocations runnable on this OS: the sh
+// wrapper on Linux/macOS; codex.cmd and, when present, codex.ps1 on Windows.
+func wrapperCmds(t *testing.T, binDir string) map[string][]string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return map[string][]string{"sh": {filepath.Join(binDir, "codex")}}
+	}
+	cmds := map[string][]string{"cmd": {"cmd.exe", "/d", "/c", filepath.Join(binDir, "codex.cmd")}}
+	if ps, err := exec.LookPath("powershell"); err == nil {
+		cmds["ps1"] = []string{ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(binDir, "codex.ps1")}
+	}
+	return cmds
+}
+
+// fakeCodex puts a "real" codex in a new directory that prints what it got.
+func fakeCodex(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		put(t, filepath.Join(dir, "codex.cmd"), []byte("@echo off\r\necho real:%HTTPS_PROXY%:%NO_PROXY%:%ZATVOR_WRAPPED%:%*\r\n"))
+	} else if err := os.WriteFile(filepath.Join(dir, "codex"), []byte("#!/bin/sh\necho \"real:$HTTPS_PROXY:$NO_PROXY:$ZATVOR_WRAPPED:$*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestWrapperFindsRealToolNotItself(t *testing.T) {
 	e := newEnv(t)
 	put(t, e.roots.StateFile, []byte(testProxy))
@@ -594,49 +698,40 @@ func TestWrapperFindsRealToolNotItself(t *testing.T) {
 			t.Errorf("wrapper %s: %v", n, err)
 		}
 	}
-
-	realDir := t.TempDir()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		put(t, filepath.Join(realDir, "codex.cmd"), []byte("@echo off\r\necho real:%HTTPS_PROXY%:%NO_PROXY%:%*\r\n"))
-		cmd = exec.Command("cmd.exe", "/d", "/c", filepath.Join(e.roots.BinDir, "codex.cmd"), "exec", "hi")
-	} else {
-		if err := os.WriteFile(filepath.Join(realDir, "codex"), []byte("#!/bin/sh\necho \"real:$HTTPS_PROXY:$NO_PROXY:$*\"\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		cmd = exec.Command(filepath.Join(e.roots.BinDir, "codex"), "exec", "hi")
-	}
+	realDir := fakeCodex(t)
 	sep := string(os.PathListSeparator)
 	// BinDir first, as the user would put it, once more with a trailing separator.
-	cmd.Env = append(os.Environ(), "PATH="+e.roots.BinDir+sep+e.roots.BinDir+string(filepath.Separator)+sep+realDir+sep+os.Getenv("PATH"))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%v: %s", err, out)
-	}
-	want := "real:" + testProxy + ":localhost,127.0.0.1,::1:exec hi"
-	if got := strings.TrimSpace(string(out)); got != want {
-		t.Errorf("wrapper ran %q, want %q", got, want)
-	}
-
-	if runtime.GOOS == "windows" {
-		if ps, err := exec.LookPath("powershell"); err == nil {
-			c := exec.Command(ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(e.roots.BinDir, "codex.ps1"), "exec", "hi")
-			c.Env = cmd.Env
-			out, err := c.CombinedOutput()
-			if err != nil {
-				t.Fatalf("codex.ps1: %v: %s", err, out)
-			}
-			if got := strings.TrimSpace(string(out)); got != want {
-				t.Errorf("codex.ps1 ran %q, want %q", got, want)
-			}
+	path := e.roots.BinDir + sep + e.roots.BinDir + string(filepath.Separator) + sep + realDir + sep + os.Getenv("PATH")
+	for kind, args := range wrapperCmds(t, e.roots.BinDir) {
+		cmd := exec.Command(args[0], append(args[1:], "exec", "hi")...)
+		cmd.Env = cleanEnv(path)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v: %s", kind, err, out)
 		}
-	}
+		want := "real:" + testProxy + ":localhost,127.0.0.1,::1:1:exec hi"
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Errorf("%s wrapper ran %q, want %q", kind, got, want)
+		}
+		if strings.Contains(string(out), "PATH") {
+			t.Errorf("%s: unexpected output %q", kind, out)
+		}
 
-	// Only the wrapper on PATH: it fails instead of calling itself.
-	cmd2 := exec.Command(cmd.Args[0], cmd.Args[1:]...)
-	cmd2.Env = append(os.Environ(), "PATH="+e.roots.BinDir+sep+filepath.Dir(cmd.Path))
-	if out, err := cmd2.CombinedOutput(); err == nil || !strings.Contains(string(out), "not found") {
-		t.Errorf("wrapper without a real tool: err=%v out=%s", err, out)
+		// Only the wrapper on PATH: it fails instead of calling itself.
+		self := exec.Command(args[0], args[1:]...)
+		self.Env = cleanEnv(e.roots.BinDir + sep + filepath.Dir(self.Path))
+		if out, err := self.CombinedOutput(); err == nil || !strings.Contains(string(out), "not found") {
+			t.Errorf("%s without a real tool: err=%v out=%s", kind, err, out)
+		}
+
+		// R29: started from inside a wrapper → a clear error, exit 1.
+		nested := exec.Command(args[0], args[1:]...)
+		nested.Env = cleanEnv(path, "ZATVOR_WRAPPED=1")
+		out, err = nested.CombinedOutput()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 1 || !strings.Contains(string(out), "started itself") || strings.Contains(string(out), "real:") {
+			t.Errorf("%s with ZATVOR_WRAPPED set: err=%v out=%s", kind, err, out)
+		}
 	}
 
 	mustDisable(t, e.m)
@@ -645,6 +740,71 @@ func TestWrapperFindsRealToolNotItself(t *testing.T) {
 	}
 	if tg := e.target("codex"); tg.State != Off {
 		t.Errorf("codex after Disable: %q", tg.State)
+	}
+}
+
+// A state file that is not exactly http://127.0.0.1:<port> is treated as
+// empty by every wrapper and block, and is never executed.
+var hostileStates = []string{
+	"x\" & echo PWNED & rem \"",
+	"http://127.0.0.1:1\" & echo PWNED & rem \"",
+	"http://127.0.0.1:1 & echo PWNED",
+	"$(echo PWNED)",
+	"http://evil.example:8080",
+	"http://127.0.0.1:",
+	"http://127.0.0.1:123456",
+	"http://127.0.0.1:80/x",
+}
+
+func TestHostileStateFileIgnored(t *testing.T) {
+	e := newEnv(t)
+	mustEnable(t, e.m)
+	realDir := fakeCodex(t)
+	path := e.roots.BinDir + string(os.PathListSeparator) + realDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	for _, st := range hostileStates {
+		put(t, e.roots.StateFile, []byte(st))
+		for kind, args := range wrapperCmds(t, e.roots.BinDir) {
+			cmd := exec.Command(args[0], append(args[1:], "x")...)
+			cmd.Env = cleanEnv(path)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s state %q: %v: %s", kind, st, err, out)
+			}
+			if got := strings.TrimSpace(string(out)); got != "real:::1:x" {
+				t.Errorf("%s with state %q ran %q, want no proxy", kind, st, got)
+			}
+		}
+	}
+
+	bashPath, err := exec.LookPath("bash")
+	if err != nil || runtime.GOOS == "windows" {
+		return
+	}
+	for _, st := range hostileStates {
+		put(t, e.roots.StateFile, []byte(st))
+		script := bashBlock(e.roots.StateFile) + "echo \"${HTTPS_PROXY-unset}|${NO_PROXY-unset}\"\n"
+		cmd := exec.Command(bashPath, "--norc", "--noprofile", "-c", script)
+		cmd.Env = cleanEnv(os.Getenv("PATH"))
+		out, err := cmd.CombinedOutput()
+		if err != nil || string(out) != "unset|unset\n" {
+			t.Errorf("bash block with state %q: %v %q", st, err, out)
+		}
+	}
+}
+
+func TestWrapperGolden(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator)+"zatvor", "data")
+	bin, state := filepath.Join(base, "bin"), filepath.Join(base, "run", "devtools.proxy")
+	golden(t, "codex.cmd", cmdWrapper("codex", bin, state))
+	golden(t, "codex.ps1", ps1Wrapper("codex", bin, state))
+	cmd := cmdWrapper("codex", bin, state)
+	for _, want := range []string{"EnableDelayedExpansion", `"!ZATVOR_PROXY:~0,17!"=="http://127.0.0.1:"`, "ZATVOR_WRAPPED"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("cmd wrapper lacks %q", want)
+		}
+	}
+	if strings.Contains(cmd, "%ZATVOR_PROXY%") {
+		t.Errorf("cmd wrapper expands the raw state line at parse time")
 	}
 }
 
@@ -687,7 +847,7 @@ func canonJSON(b []byte) []byte {
 func TestJournaledBeforeWrite(t *testing.T) {
 	e := newEnv(t, "docs/WindowsPowerShell", "home/.claude", "appdata/Code/User")
 	cfs := &journalCheckFS{FS: e.fs, t: t, j: e.j}
-	m := New(e.roots, e.j, cfs)
+	m := testManager(e.roots, e.j, cfs)
 	put(t, filepath.Join(e.roots.AppData, "Code", "User", "settings.json"), fixture(t, "vscode_settings.jsonc"))
 	mustEnable(t, m)
 	if cfs.checked != 4 { // pwsh5, bash, claude, vscode
@@ -716,7 +876,7 @@ func TestRevertAfterCrash(t *testing.T) {
 	mustEnable(t, e.m)
 
 	// The daemon dies; the next start reverts from the journal alone.
-	m2 := New(e.roots, e.j, &osFS{})
+	m2 := testManager(e.roots, e.j, &osFS{})
 	for _, r := range e.j.RevertAll(map[string]journal.Reverter{Kind: m2.Reverter()}) {
 		if r.Outcome != journal.Restored {
 			t.Errorf("%s: %s %v", r.Target, r.Outcome, r.Err)
@@ -725,8 +885,8 @@ func TestRevertAfterCrash(t *testing.T) {
 	if got := read(t, vs); !bytes.Equal(got, orig) {
 		t.Errorf("vscode settings not restored:\n%q", got)
 	}
-	if b := read(t, e.path("pwsh5")); len(b) != 0 {
-		t.Errorf("pwsh5 block not removed: %q", b)
+	if _, err := os.Stat(e.path("pwsh5")); !os.IsNotExist(err) {
+		t.Errorf("the pwsh5 profile we created is still there: %v", err)
 	}
 }
 
@@ -736,7 +896,7 @@ func TestRecorderChangesNothing(t *testing.T) {
 	orig := fixture(t, "claude_settings.json")
 	put(t, claude, orig)
 	var log bytes.Buffer
-	m := New(e.roots, e.j, NewRecorder(&log))
+	m := testManager(e.roots, e.j, NewRecorder(&log))
 	mustEnable(t, m)
 	if got := read(t, claude); !bytes.Equal(got, orig) {
 		t.Errorf("recorder changed the file")
@@ -815,10 +975,10 @@ func TestNonASCIIPathsStayASCII(t *testing.T) {
 func TestUnsetRootIsMissing(t *testing.T) {
 	e := newEnv(t)
 	r := e.roots
-	r.Documents, r.AppData = "", ""
-	m := New(r, e.j, e.fs)
+	r.Documents, r.AppData, r.Home = "", "", ""
+	m := testManager(r, e.j, e.fs)
 	mustEnable(t, m)
-	for _, n := range []string{"pwsh5", "pwsh7", "vscode"} {
+	for _, n := range []string{"pwsh5", "pwsh7", "vscode", "bash", "claude"} {
 		if s := statusOf(m, n); s != Missing {
 			t.Errorf("%s with an unset root: %q, want missing", n, s)
 		}
@@ -830,5 +990,163 @@ func TestUnsetRootIsMissing(t *testing.T) {
 		if _, err := os.Stat(d); err == nil {
 			t.Errorf("created %s relative to the working directory", d)
 		}
+	}
+}
+
+// The owning app changes one of our keys between RevertAll's check and our
+// rename: the revert must not put our Prev over their value.
+func TestRevertNeverClobbersARacingChange(t *testing.T) {
+	e := newEnv(t, "home/.claude")
+	path := e.path("claude")
+	put(t, path, fixture(t, "claude_settings.json"))
+	mustEnable(t, e.m)
+	var theirs []byte
+	e.fs.beforeRename = func(p string) {
+		if p != path || theirs != nil {
+			return
+		}
+		theirs = bytes.Replace(read(t, path), []byte(testProxy), []byte("http://other.example:1"), 1)
+		put(t, path, theirs)
+	}
+	mustDisable(t, e.m)
+	if theirs == nil {
+		t.Fatal("the racing write never happened")
+	}
+	if got := read(t, path); !bytes.Equal(got, theirs) {
+		t.Errorf("revert clobbered the racing change:\n got %s\nwant %s", got, theirs)
+	}
+	var skipped bool
+	for _, r := range e.m.LastRevert() {
+		skipped = skipped || (r.Outcome == journal.SkippedChangedByOther && strings.HasPrefix(r.Target, "claude:"))
+	}
+	if !skipped {
+		t.Errorf("want SkippedChangedByOther, got %+v", e.m.LastRevert())
+	}
+	if p := pendingFor(t, e.j, path); len(p) != 0 {
+		t.Errorf("%d entries still pending", len(p))
+	}
+}
+
+// R30: every zatvor block is ours, journaled or not.
+func TestStaleBlockIsOurs(t *testing.T) {
+	e := newEnv(t)
+	bashrc := e.path("bash")
+	user := "alias ll='ls -l'\n"
+	stale := beginMarker + "\necho old zatvor\n" + endMarker + "\n"
+	put(t, bashrc, []byte(user+"\n"+stale))
+	if tg := e.target("bash"); tg.State != Conflict || !strings.Contains(tg.Note, "not journaled") {
+		t.Errorf("stale block: %+v", tg)
+	}
+	mustEnable(t, e.m)
+	if got := string(read(t, bashrc)); strings.Contains(got, "echo old zatvor") || strings.Count(got, beginMarker) != 1 {
+		t.Errorf("stale block not replaced:\n%s", got)
+	}
+	mustDisable(t, e.m)
+	if got := string(read(t, bashrc)); got != user {
+		t.Errorf("Disable left %q, want %q", got, user)
+	}
+
+	// The current block, left by a lost journal: Enable takes it over.
+	put(t, bashrc, []byte(user+"\n"+bashBlock(e.roots.StateFile)))
+	mustEnable(t, e.m)
+	if tg := e.target("bash"); tg.State != On {
+		t.Errorf("adopted block: %+v", tg)
+	}
+	mustDisable(t, e.m)
+	if got := string(read(t, bashrc)); got != user {
+		t.Errorf("adopted block not removed: %q", got)
+	}
+}
+
+// R31: a missing Windows PowerShell 5.1 profile is created only when the
+// execution policy lets profiles run.
+func TestPwsh5ExecutionPolicy(t *testing.T) {
+	for _, c := range []struct {
+		policy string
+		create bool
+	}{{"RemoteSigned", true}, {"unrestricted", true}, {"Bypass", true}, {"Restricted", false}, {"AllSigned", false}, {"", false}} {
+		e := newEnv(t, "docs/WindowsPowerShell")
+		e.m.policy = func() string { return c.policy }
+		mustEnable(t, e.m)
+		_, err := os.Stat(e.path("pwsh5"))
+		if created := err == nil; created != c.create {
+			t.Errorf("policy %q: created=%v, want %v", c.policy, created, c.create)
+		}
+		tg := e.target("pwsh5")
+		if !c.create && (tg.State != Missing || tg.Note == "") {
+			t.Errorf("policy %q: %+v, want missing with a note", c.policy, tg)
+		}
+		if c.policy == "Restricted" && !strings.Contains(tg.Note, "execution policy prevents profiles") {
+			t.Errorf("note %q", tg.Note)
+		}
+	}
+	// An existing profile is edited whatever the policy.
+	e := newEnv(t, "docs/WindowsPowerShell")
+	e.m.policy = func() string { return "Restricted" }
+	put(t, e.path("pwsh5"), fixture(t, "profile_crlf_bom.ps1"))
+	mustEnable(t, e.m)
+	if tg := e.target("pwsh5"); tg.State != On {
+		t.Errorf("existing profile under Restricted: %+v", tg)
+	}
+}
+
+func TestDuplicateOwnKeysRefused(t *testing.T) {
+	e := newEnv(t, "home/.claude", "appdata/Code/User")
+	claude, vs := e.path("claude"), e.path("vscode")
+	dupEnv := []byte("{\n  \"env\": {\"A\": \"1\"},\n  \"env\": {\"B\": \"2\"}\n}\n")
+	dupKey := []byte("{\n  \"http.proxy\": \"a\",\n  \"http.proxy\": \"b\"\n}\n")
+	put(t, claude, dupEnv)
+	put(t, vs, dupKey)
+	err := e.m.Enable(testPort)
+	for _, n := range []string{"claude", "vscode"} {
+		if !hasCode(err, n, CodeUnsupported) {
+			t.Errorf("%s: Enable = %v, want %s", n, err, CodeUnsupported)
+		}
+	}
+	if !bytes.Equal(read(t, claude), dupEnv) || !bytes.Equal(read(t, vs), dupKey) {
+		t.Errorf("a file with duplicate keys was changed")
+	}
+}
+
+func hasCode(err error, target, code string) bool {
+	var errs []error
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		errs = j.Unwrap()
+	} else if err != nil {
+		errs = []error{err}
+	}
+	for _, e := range errs {
+		var de *Error
+		if errors.As(e, &de) && de.Target == target && de.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBrokenSymlinkUnsupported(t *testing.T) {
+	e := newEnv(t)
+	link := e.path("bash")
+	symlinkOrSkip(t, filepath.Join(t.TempDir(), "gone"), link)
+	if err := e.m.Enable(testPort); !hasCode(err, "bash", CodeUnsupported) {
+		t.Fatalf("Enable = %v, want %s for bash", err, CodeUnsupported)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("broken link replaced: %v", err)
+	}
+	if tg := e.target("bash"); tg.State != Conflict {
+		t.Errorf("state %q, want conflict", tg.State)
+	}
+}
+
+func TestNoteWhenBlockIsNotLast(t *testing.T) {
+	e := newEnv(t)
+	mustEnable(t, e.m)
+	if tg := e.target("bash"); tg.Note != "" {
+		t.Errorf("unexpected note %q", tg.Note)
+	}
+	put(t, e.path("bash"), append(read(t, e.path("bash")), []byte("PROMPT_COMMAND=mine\n")...))
+	if tg := e.target("bash"); tg.State != On || !strings.Contains(tg.Note, "not the last") {
+		t.Errorf("block not last: %+v", tg)
 	}
 }

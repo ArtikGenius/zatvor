@@ -8,6 +8,10 @@ __zatvor_sync() {
   local p=
   if [ -r "$__zatvor_state" ]; then IFS= read -r p < "$__zatvor_state" || :; fi
   p=${p%$'\r'}
+  case $p in
+    http://127.0.0.1:*) case ${p#http://127.0.0.1:} in ''|*[!0-9]*|??????*) p= ;; esac ;;
+    *) p= ;;
+  esac
   [ "$p" = "$__zatvor_last" ] && return 0
   __zatvor_last=$p
   if [ -n "$p" ]; then

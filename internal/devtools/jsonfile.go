@@ -17,12 +17,46 @@ import (
 // byte-equal when nothing else was edited around it.
 
 // jsonProjection is what the journal records for a JSON file: our keys as
-// JSON pointers, each with its value or null when absent.
+// JSON pointers, each with its value or null when absent, and whether the
+// file exists.
 type jsonProjection struct {
-	Keys map[string]json.RawMessage `json:"keys"`
+	Keys   map[string]json.RawMessage `json:"keys"`
+	Exists bool                       `json:"exists"`
 }
 
-var errNotObject = errors.New("devtools: the settings file is not a JSON object")
+var (
+	errNotObject = errors.New("devtools: the settings file is not a JSON object")
+	errDuplicate = errors.New("devtools: the settings file has one of our keys (or its parent) more than once")
+)
+
+// duplicated reports whether a name on the path to ptr occurs twice in its
+// object: readers disagree on which one wins, so we do not edit such a file.
+func duplicated(root *hujson.Value, ptr string) bool {
+	v := root
+	for _, seg := range strings.Split(ptr, "/")[1:] {
+		obj, ok := v.Value.(*hujson.Object)
+		if !ok {
+			return false
+		}
+		name := strings.NewReplacer("~1", "/", "~0", "~").Replace(seg)
+		first, n := -1, 0
+		for i, m := range obj.Members {
+			if lit, ok := m.Name.Value.(hujson.Literal); ok && lit.String() == name {
+				if n++; first < 0 {
+					first = i
+				}
+			}
+		}
+		if n > 1 {
+			return true
+		}
+		if first < 0 {
+			return false
+		}
+		v = &obj.Members[first].Value
+	}
+	return false
+}
 
 func isBlank(b []byte) bool { return len(bytes.TrimSpace(b)) == 0 }
 
@@ -244,13 +278,16 @@ func newJSONDoc(data []byte, defUnit string) jsonDoc {
 
 func (d jsonDoc) bytes() []byte { return append(append([]byte(nil), d.bom...), d.body...) }
 
-func (d jsonDoc) projection(ptrs []string) (json.RawMessage, error) {
+func (d jsonDoc) projection(ptrs []string, exists bool) (json.RawMessage, error) {
 	root, err := parseObject(d.body)
 	if err != nil {
 		return nil, err
 	}
-	p := jsonProjection{Keys: map[string]json.RawMessage{}}
+	p := jsonProjection{Keys: map[string]json.RawMessage{}, Exists: exists}
 	for _, ptr := range ptrs {
+		if duplicated(&root, ptr) {
+			return nil, errDuplicate
+		}
 		v := jsonGet(&root, ptr)
 		if v == nil {
 			v = json.RawMessage("null")

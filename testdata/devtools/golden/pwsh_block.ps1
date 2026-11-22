@@ -5,6 +5,7 @@ $global:__zatvorState = 'C:\Users\test\AppData\Local\Zatvor\Run\devtools.proxy'
 $global:__zatvorStamp = $null
 $global:__zatvorProxy = $null
 if ("$function:prompt" -notmatch '__zatvorSync') { $global:__zatvorPrompt = $function:prompt }
+if (-not $global:__zatvorPrompt) { $global:__zatvorPrompt = { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) " } }
 function global:__zatvorSync {
     $stamp = $null
     try { if ([IO.File]::Exists($global:__zatvorState)) { $stamp = [IO.File]::GetLastWriteTimeUtc($global:__zatvorState).Ticks } } catch { }
@@ -12,6 +13,7 @@ function global:__zatvorSync {
     $global:__zatvorStamp = $stamp
     $p = ''
     if ($null -ne $stamp) { try { $p = [IO.File]::ReadAllText($global:__zatvorState).Trim() } catch { $p = '' } }
+    if ($p -cnotmatch '^http://127\.0\.0\.1:[0-9]{1,5}$') { $p = '' }
     if ($p) {
         $env:HTTPS_PROXY = $p
         $env:HTTP_PROXY = $p
@@ -25,8 +27,9 @@ function global:__zatvorSync {
     }
 }
 function global:prompt {
+    $__zatvorOut = & $global:__zatvorPrompt
     __zatvorSync
-    if ($global:__zatvorPrompt) { & $global:__zatvorPrompt } else { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) " }
+    $__zatvorOut
 }
 __zatvorSync
 # <<< zatvor <<<

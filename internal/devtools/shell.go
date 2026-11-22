@@ -54,6 +54,10 @@ func posixPath(p string) string {
 // profile defined so far (or the default prompt) and, at every prompt, looks
 // at the state file's LastWriteTime; only when that changed does it read the
 // file and set or clear the proxy variables. It clears only values it set.
+// The user's prompt runs first, so it still sees the last command's $? (the
+// error marks of Starship and oh-my-posh). Anything in the state file but
+// exactly http://127.0.0.1:<port> counts as empty. The block must stay last
+// in the profile: a prompt function defined after it replaces the wrapper.
 func pwshBlock(stateFile string) string {
 	return beginMarker + `
 # Managed by Zatvor: while Zatvor is connected, new prompts route developer
@@ -62,6 +66,7 @@ $global:__zatvorState = ` + pwshString(stateFile) + `
 $global:__zatvorStamp = $null
 $global:__zatvorProxy = $null
 if ("$function:prompt" -notmatch '__zatvorSync') { $global:__zatvorPrompt = $function:prompt }
+if (-not $global:__zatvorPrompt) { $global:__zatvorPrompt = { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) " } }
 function global:__zatvorSync {
     $stamp = $null
     try { if ([IO.File]::Exists($global:__zatvorState)) { $stamp = [IO.File]::GetLastWriteTimeUtc($global:__zatvorState).Ticks } } catch { }
@@ -69,6 +74,7 @@ function global:__zatvorSync {
     $global:__zatvorStamp = $stamp
     $p = ''
     if ($null -ne $stamp) { try { $p = [IO.File]::ReadAllText($global:__zatvorState).Trim() } catch { $p = '' } }
+    if ($p -cnotmatch '^http://127\.0\.0\.1:[0-9]{1,5}$') { $p = '' }
     if ($p) {
         $env:HTTPS_PROXY = $p
         $env:HTTP_PROXY = $p
@@ -82,8 +88,9 @@ function global:__zatvorSync {
     }
 }
 function global:prompt {
+    $__zatvorOut = & $global:__zatvorPrompt
     __zatvorSync
-    if ($global:__zatvorPrompt) { & $global:__zatvorPrompt } else { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) " }
+    $__zatvorOut
 }
 __zatvorSync
 ` + endMarker + "\n"
@@ -92,7 +99,7 @@ __zatvorSync
 // bashBlock is the bash profile block: a PROMPT_COMMAND hook, appended to
 // the user's own, that reads the state file with the read builtin (no fork)
 // and sets or clears the proxy variables when the value changed. It clears
-// only values it set.
+// only values it set; anything but http://127.0.0.1:<port> counts as empty.
 func bashBlock(stateFile string) string {
 	return beginMarker + `
 # Managed by Zatvor: while Zatvor is connected, new prompts route developer
@@ -104,6 +111,10 @@ __zatvor_sync() {
   local p=
   if [ -r "$__zatvor_state" ]; then IFS= read -r p < "$__zatvor_state" || :; fi
   p=${p%$'\r'}
+  case $p in
+    http://127.0.0.1:*) case ${p#http://127.0.0.1:} in ''|*[!0-9]*|??????*) p= ;; esac ;;
+    *) p= ;;
+  esac
   [ "$p" = "$__zatvor_last" ] && return 0
   __zatvor_last=$p
   if [ -n "$p" ]; then
@@ -308,12 +319,15 @@ func editProfile(data []byte, f func(u8 []byte, u16 []uint16) ([]byte, []uint16,
 func hasPrefix(b, p []byte) bool { return len(b) >= len(p) && string(b[:len(p)]) == string(p) }
 
 // shellProjection is what the journal records for a profile: our block's
-// text, or "" when there is none.
+// text ("" when there is none) and whether the file exists.
 type shellProjection struct {
-	Block string `json:"block"`
+	Block  string `json:"block"`
+	Exists bool   `json:"exists"`
 }
 
-func shellCurrent(data []byte) (json.RawMessage, error) {
+// shellCurrent is the projection of data; exists tells whether the file
+// exists at all.
+func shellCurrent(data []byte, exists bool) (json.RawMessage, error) {
 	var block string
 	_, err := editProfile(data, func(b []byte, u []uint16) ([]byte, []uint16, error) {
 		var err error
@@ -327,7 +341,34 @@ func shellCurrent(data []byte) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(shellProjection{Block: block})
+	return json.Marshal(shellProjection{Block: block, Exists: exists})
+}
+
+// blockIsLast reports whether nothing but blank lines follows our block.
+func blockIsLast(data []byte) bool {
+	last := true
+	editProfile(data, func(b []byte, u []uint16) ([]byte, []uint16, error) {
+		if u != nil {
+			last = tailBlank(u)
+		} else {
+			last = tailBlank(b)
+		}
+		return nil, nil, nil
+	})
+	return last
+}
+
+func tailBlank[E unit](s []E) bool {
+	_, end, found, err := findBlock(s)
+	if err != nil || !found {
+		return true
+	}
+	for _, c := range s[end:] {
+		if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			return false
+		}
+	}
+	return true
 }
 
 // shellSet returns data with our block set to block ("" removes it).
