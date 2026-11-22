@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ArtikGenius/zatvor/internal/happ"
 	"github.com/ArtikGenius/zatvor/internal/link"
 	"github.com/ArtikGenius/zatvor/internal/ojson"
 	"github.com/ArtikGenius/zatvor/internal/profile"
@@ -419,5 +421,100 @@ func TestFileKeyConcurrentCreate(t *testing.T) {
 		if len(ents) != 1 {
 			t.Fatalf("round %d: leftover files %v", round, ents)
 		}
+	}
+}
+
+// decrypt returns the stored JSON document.
+func decrypt(t *testing.T, s *Store) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(s.path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := s.aead.Open(nil, data[headerLen:headerLen+nonceLen], data[headerLen+nonceLen:], data[:headerLen])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(plain, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+func happSample() []profile.Subscription {
+	pr := &happ.Profile{Name: "provider", ProxySites: []string{"geosite:google"}}
+	own := &happ.Profile{Name: "imported", DirectSites: []string{"geosite:category-ru"}}
+	return []profile.Subscription{{
+		ID: "s1", URL: "https://" + testHost + "/sub/REPLACE_ME", ProviderRouting: pr,
+		Profiles: []profile.Profile{
+			{ID: "a", SubscriptionID: "s1", RoutingSource: profile.Source{Kind: profile.SourceProvider, Happ: pr}},
+			{ID: "b", SubscriptionID: "s1", RoutingSource: profile.Source{Happ: pr}}, // zero Kind is provider
+			{ID: "c", SubscriptionID: "s1", RoutingSource: profile.Source{Kind: profile.SourceHapp, Happ: own}},
+			{ID: "d", SubscriptionID: "s1", RoutingSource: profile.Source{Kind: profile.SourcePreset, Preset: profile.PresetAllProxy}},
+		},
+	}}
+}
+
+// The provider's Happ profile is stored once, on the subscription; provider
+// profiles are re-linked to it on Load. Only SourceHapp keeps its own copy.
+func TestProviderRoutingStoredOnce(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, filepath.Join(dir, "key"))
+	in := happSample()
+	if err := s.Save(in); err != nil {
+		t.Fatal(err)
+	}
+	if in[0].Profiles[0].RoutingSource.Happ == nil {
+		t.Fatal("Save changed the caller's profiles")
+	}
+	doc := decrypt(t, s)
+	if doc["version"] != float64(docVersion) || docVersion < 2 {
+		t.Fatalf("document version = %v", doc["version"])
+	}
+	profs := doc["subscriptions"].([]any)[0].(map[string]any)["Profiles"].([]any)
+	for i, want := range []bool{false, false, true, false} {
+		h := profs[i].(map[string]any)["RoutingSource"].(map[string]any)["Happ"]
+		if (h != nil) != want {
+			t.Errorf("profile %d: stored Happ = %v, want present=%v", i, h, want)
+		}
+	}
+	got, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := got[0]
+	for _, i := range []int{0, 1} {
+		if sub.Profiles[i].RoutingSource.Happ != sub.ProviderRouting || sub.ProviderRouting == nil {
+			t.Errorf("profile %d not re-linked to ProviderRouting", i)
+		}
+	}
+	if h := sub.Profiles[2].RoutingSource.Happ; h == nil || h == sub.ProviderRouting || h.Name != "imported" {
+		t.Errorf("happ profile = %+v", h)
+	}
+	if sub.Profiles[3].RoutingSource.Happ != nil {
+		t.Errorf("preset profile got a Happ profile")
+	}
+	if !reflect.DeepEqual(got, in) {
+		t.Fatalf("round trip differs:\n%+v\n%+v", got, in)
+	}
+}
+
+// A version 1 document (Happ copied into every provider profile) still loads.
+func TestLoadsDocumentVersion1(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, filepath.Join(dir, "key"))
+	in := happSample()
+	plain, err := json.Marshal(map[string]any{"version": 1, "subscriptions": in})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSealed(t, s, formatVer, plain)
+	got, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Profiles[0].RoutingSource.Happ != got[0].ProviderRouting || !reflect.DeepEqual(got, in) {
+		t.Fatalf("v1 load = %+v", got)
 	}
 }

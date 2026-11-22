@@ -3,7 +3,9 @@
 //
 // File layout: "ZTVS", one version byte, a 12-byte random nonce, then the
 // AES-256-GCM ciphertext of the JSON document. The header and nonce are
-// authenticated as additional data. Save writes a temp file in the same
+// authenticated as additional data. The JSON document has its own version
+// (2: a provider profile's Happ profile is not stored; Load re-links it to
+// the subscription's ProviderRouting). Save writes a temp file in the same
 // directory, fsyncs it and renames it over the main file; the main file is
 // never moved. Before that, the current main file is copied to ".bak" only if
 // it decrypts with the store's key, so a bad main file never replaces a good
@@ -33,7 +35,11 @@ const (
 	formatVer  = 1
 	headerLen  = 5 // magic + version
 	nonceLen   = 12
-	docVersion = 1
+	// docVersion 2 stores a provider profile without its Happ profile (the
+	// subscription's ProviderRouting holds it once). Version 1 documents
+	// carry a copy per profile and still load.
+	docVersion   = 2
+	docVersionV1 = 1
 )
 
 var magic = []byte("ZTVS")
@@ -107,6 +113,8 @@ func Open(dir string, kp KeyProvider) (*Store, error) {
 func (s *Store) path() string { return filepath.Join(s.dir, fileName) }
 
 // Load returns the saved subscriptions; a missing file is an empty store.
+// Provider profiles share their subscription's ProviderRouting as
+// RoutingSource.Happ, as profile.Apply sets it.
 // A wrong key or damaged ciphertext is ErrWrongKey, a truncated file or bad
 // document ErrCorrupt, a foreign file ErrFormat and an unknown version
 // ErrVersion; other errors are I/O errors. It does not fall back to ".bak"
@@ -139,8 +147,16 @@ func (s *Store) Load() ([]profile.Subscription, error) {
 	if err := json.Unmarshal(plain, &doc); err != nil {
 		return nil, fmt.Errorf("%w: decrypted content is not a store document", ErrCorrupt)
 	}
-	if doc.Version != docVersion {
+	if doc.Version != docVersion && doc.Version != docVersionV1 {
 		return nil, fmt.Errorf("%w: document %d", ErrVersion, doc.Version)
+	}
+	for i := range doc.Subscriptions {
+		sub := &doc.Subscriptions[i]
+		for j := range sub.Profiles {
+			if src := &sub.Profiles[j].RoutingSource; isProvider(*src) {
+				src.Happ = sub.ProviderRouting
+			}
+		}
 	}
 	return doc.Subscriptions, nil
 }
@@ -155,7 +171,7 @@ func (s *Store) Save(subs []profile.Subscription) error {
 	if subs == nil {
 		subs = []profile.Subscription{}
 	}
-	plain, err := json.Marshal(document{Version: docVersion, Subscriptions: subs})
+	plain, err := json.Marshal(document{Version: docVersion, Subscriptions: withoutProviderHapp(subs)})
 	if err != nil {
 		return fmt.Errorf("store: encode: %w", err)
 	}
@@ -195,6 +211,32 @@ func (s *Store) Save(subs []profile.Subscription) error {
 		d.Close()
 	}
 	return nil
+}
+
+// isProvider reports whether src follows the subscription's routing (a zero
+// Kind means SourceProvider).
+func isProvider(src profile.Source) bool {
+	return src.Kind == "" || src.Kind == profile.SourceProvider
+}
+
+// withoutProviderHapp returns subs with Happ cleared on provider profiles,
+// leaving the caller's slices untouched. Load re-links them.
+func withoutProviderHapp(subs []profile.Subscription) []profile.Subscription {
+	out := make([]profile.Subscription, len(subs))
+	for i, sub := range subs {
+		if sub.Profiles != nil {
+			profs := make([]profile.Profile, len(sub.Profiles))
+			copy(profs, sub.Profiles)
+			for j := range profs {
+				if isProvider(profs[j].RoutingSource) {
+					profs[j].RoutingSource.Happ = nil
+				}
+			}
+			sub.Profiles = profs
+		}
+		out[i] = sub
+	}
+	return out
 }
 
 // opens reports whether data is a store file that decrypts and authenticates

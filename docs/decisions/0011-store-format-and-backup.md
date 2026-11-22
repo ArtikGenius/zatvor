@@ -21,6 +21,17 @@ update must not lose good data.
 - Update merging keeps old data when a new fetch is bad: a failed routing header decode keeps the old
   provider routing. An absent or disabled header clears it.
 - `ojson.Object` serialises with key order kept, so stored configs round-trip byte-stable.
+- The JSON document carries its own version. Version 2 (2026-11-22, final 1a review): a profile whose
+  routing source is the provider (`SourceProvider`, or an empty kind) is stored without its Happ profile;
+  the subscription's `ProviderRouting` holds it once, and Load points every provider profile back at it.
+  Only a `SourceHapp` profile stores its own Happ profile. Version 1 documents (a copy per profile) still
+  load and are written back as version 2 on the next Save.
+- Load errors are typed for 1c: `ErrWrongKey` (does not authenticate: wrong key or damaged ciphertext)
+  and `ErrCorrupt` (truncated, or not a store document) are the cases that offer the `.bak` restore;
+  `ErrFormat` (not a store file), `ErrVersion` (an unknown file or document version, from a newer Zatvor)
+  and `ErrKey` (key provider failed) are not.
+- The 0600 key file is written to a temp file, fsynced and hard-linked into place, so it appears complete
+  or not at all and a concurrent first use never overwrites it.
 
 ## Consequences
 
