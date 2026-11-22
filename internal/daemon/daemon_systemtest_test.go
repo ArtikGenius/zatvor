@@ -79,6 +79,9 @@ type helperConfig struct {
 	Geo    string   `json:"geo"`
 	Lock   string   `json:"lock"` // the instance lock name of this test
 	Checks []string `json:"checks"`
+	// MinRestart, when set, is the helper supervisor's shortest restart
+	// backoff (see minDelayClock).
+	MinRestart time.Duration `json:"minRestart"`
 }
 
 const (
@@ -120,8 +123,17 @@ func liveHelper() (int, bool) {
 		}
 		return 0, true
 	}
-	return runHelperSupervisor(ctx, opts, cfg.Lock), true
+	return runHelperSupervisor(ctx, opts, cfg.Lock, minDelayClock{cfg.MinRestart}), true
 }
+
+// minDelayClock is the wall clock whose After waits at least min. The
+// supervisor uses its clock's After only for the restart backoff, so this
+// stretches the backoff and nothing else.
+type minDelayClock struct{ min time.Duration }
+
+func (minDelayClock) Now() time.Time { return time.Now() }
+
+func (c minDelayClock) After(d time.Duration) <-chan time.Time { return time.After(max(d, c.min)) }
 
 // stdinContext ends when stdin closes: how a supervisor stops its child
 // and how the test stops its supervisor (as cmd/zatvord).
@@ -137,7 +149,7 @@ func stdinContext() (context.Context, context.CancelFunc) {
 // runHelperSupervisor is cmd/zatvord's supervisor over helper children:
 // the same supervisor.Run with the journal of the live mode, its reverters
 // and the instance lock before every revert.
-func runHelperSupervisor(ctx context.Context, opts Options, lockName string) int {
+func runHelperSupervisor(ctx context.Context, opts Options, lockName string, clock minDelayClock) int {
 	j, rs, closeRec, err := Reverters(opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "helper supervisor:", err)
@@ -157,7 +169,7 @@ func runHelperSupervisor(ctx context.Context, opts Options, lockName string) int
 		return rel, true
 	}
 	logf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, "helper "+format+"\n", a...) }
-	if err := supervisor.Run(ctx, child, j, rs, nil, supervisor.WithRevertLock(lock), supervisor.WithLogf(logf)); err != nil {
+	if err := supervisor.Run(ctx, child, j, rs, clock, supervisor.WithRevertLock(lock), supervisor.WithLogf(logf)); err != nil {
 		fmt.Fprintln(os.Stderr, "helper supervisor:", err)
 		return 1
 	}
@@ -196,7 +208,11 @@ type liveEnv struct {
 	logPath string // the daemon's (and helpers') log, shown when the test fails
 }
 
-func newLiveEnv(t *testing.T) *liveEnv {
+func newLiveEnv(t *testing.T) *liveEnv { return newLiveEnvWith(t, 0) }
+
+// newLiveEnvWith is newLiveEnv whose helper supervisor waits at least
+// minRestart before it restarts a crashed daemon.
+func newLiveEnvWith(t *testing.T, minRestart time.Duration) *liveEnv {
 	t.Helper()
 	xray := os.Getenv("ZATVOR_XRAY")
 	if xray == "" {
@@ -236,7 +252,8 @@ func newLiveEnv(t *testing.T) *liveEnv {
 		}
 	})
 	e.srv = startLiveServers(t, xray)
-	e.cfg = helperConfig{Data: dirs.Data, Xray: xray, Geo: geo, Lock: "ZatvorSystemtest-" + rnd, Checks: e.srv.Checks}
+	e.cfg = helperConfig{Data: dirs.Data, Xray: xray, Geo: geo, Lock: "ZatvorSystemtest-" + rnd, Checks: e.srv.Checks,
+		MinRestart: minRestart}
 	b, err := json.Marshal(e.cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -682,10 +699,10 @@ func TestLiveDaemonEndToEnd(t *testing.T) {
 		t.Fatalf("GET through the registry proxy: %d %q, %v", resp.StatusCode, b, err)
 	}
 	seen := strings.TrimSpace(string(b))
-	t.Logf("echo saw %s; reality sendThrough %q", seen, e.srv.Reality.SendThrough)
-	if e.srv.Reality.SendThrough != "" && seen != e.srv.Reality.SendThrough {
-		t.Fatalf("echo saw %s, want the Reality server's outbound address %s", seen, e.srv.Reality.SendThrough)
-	}
+	// e2e gives the servers no sendThrough address on Windows, so the
+	// access logs prove the path (R54): the Reality server carried the
+	// request and the Hysteria2 server did not.
+	t.Logf("echo saw %s", seen)
 	if err := e.srv.Reality.WaitCarried(e.srv.Echo.Addr, 5*time.Second); err != nil {
 		t.Fatalf("reality server: %v", err)
 	}
@@ -788,13 +805,15 @@ func TestLiveCrashRevert(t *testing.T) {
 	t.Run("supervisor and daemon killed, fresh start", func(t *testing.T) {
 		sp := sysproxy.NewWindows()
 		saveRunner(t, sp)
-		e := newLiveEnv(t)
+		// A restart only after 5 min: the supervisor is surely still
+		// waiting when it is killed.
+		e := newLiveEnvWith(t, 5*time.Minute)
 		sup := e.startSupervisor()
 		pid := e.waitDaemon(0)
 		st := e.connectOverForeign(sp)
 
-		// The daemon first, then its supervisor while it waits out the
-		// 1 s restart backoff: nothing of ours is left to revert.
+		// The daemon first, then its supervisor while it waits out its
+		// restart backoff: nothing of ours is left to revert.
 		e.killChild(pid, sup)
 		sup.kill(t)
 		waitLAN(t, sp, sysproxy.Ours(st.Ports.Mixed), 0)
@@ -865,10 +884,17 @@ func (f savedFile) restore() error {
 	return err
 }
 
+// userPrompt is what the user's prompt function in the seeded profile
+// prints.
+const userPrompt = "zatvor-user-prompt>"
+
 // TestLiveDevToolsOnRunner: dev tools on the runner's real profile files
-// (a disposable runner): Windows PowerShell, with the profile dot-sourced,
-// sees our proxy at the prompt; after Disable every file we may edit is
-// byte-equal to its saved copy.
+// (a disposable runner). The PowerShell profile and .bashrc are first
+// seeded with user content (BOM, CRLF, the user's own prompt). Windows
+// PowerShell, with the profile dot-sourced, shows the user's prompt and
+// sees our proxy; after Disable every file we may edit is byte-equal to
+// its copy from before Enable. t.Cleanup gives the runner its own files
+// (or their absence) back.
 func TestLiveDevToolsOnRunner(t *testing.T) {
 	systest.Require(t)
 	sp := sysproxy.NewWindows()
@@ -892,20 +918,22 @@ func TestLiveDevToolsOnRunner(t *testing.T) {
 		})
 	}
 	profilePath := filepath.Join(pwshDir, "Microsoft.PowerShell_profile.ps1")
-	files := []savedFile{saveFile(t, profilePath)}
-	for _, p := range []string{
+	bashrc := filepath.Join(roots.Home, ".bashrc")
+	paths := []string{
+		profilePath,
 		filepath.Join(roots.Documents, "PowerShell", "Microsoft.PowerShell_profile.ps1"),
-		filepath.Join(roots.Home, ".bashrc"),
+		bashrc,
 		filepath.Join(roots.Home, ".claude", "settings.json"),
 		filepath.Join(roots.AppData, "Code", "User", "settings.json"),
-	} {
-		files = append(files, saveFile(t, p))
 	}
-	for _, f := range files {
-		t.Logf("saved %s (exists %v, %d bytes)", f.path, f.exists, len(f.data))
+	var runner []savedFile // as the runner had them: put back in t.Cleanup
+	for _, p := range paths {
+		f := saveFile(t, p)
+		t.Logf("runner's %s: exists %v, %d bytes", f.path, f.exists, len(f.data))
+		runner = append(runner, f)
 	}
 	t.Cleanup(func() {
-		for _, f := range files {
+		for _, f := range runner {
 			if ok, err := f.same(); err != nil || !ok {
 				if rerr := f.restore(); rerr != nil {
 					t.Errorf("cleanup: restore %s: %v", f.path, rerr)
@@ -913,6 +941,22 @@ func TestLiveDevToolsOnRunner(t *testing.T) {
 			}
 		}
 	})
+	// The user's own content, which must survive byte for byte: a UTF-8
+	// BOM, CRLF lines and a prompt function of theirs in the PowerShell
+	// profile (our block wraps that prompt), plain LF lines in .bashrc.
+	seeds := map[string]string{
+		profilePath: "\ufeff# the user's profile\r\n$env:ZATVOR_SYSTEMTEST_USER = 'kept'\r\nfunction prompt { \"" + userPrompt + "\" }\r\n",
+		bashrc:      "# the user's bashrc\nalias ll='ls -l'\n",
+	}
+	for p, body := range seeds {
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var files []savedFile // what Disable must leave
+	for _, p := range paths {
+		files = append(files, saveFile(t, p))
+	}
 
 	e := newLiveEnv(t)
 	stop := e.runInProcess()
@@ -932,6 +976,14 @@ func TestLiveDevToolsOnRunner(t *testing.T) {
 	}
 	if !pwsh5 {
 		t.Fatalf("Windows PowerShell profile %s is not on: %+v", profilePath, on.Targets)
+	}
+	for _, f := range files {
+		if _, seeded := seeds[f.path]; !seeded {
+			continue
+		}
+		if ok, err := f.same(); err != nil || ok {
+			t.Fatalf("%s was not edited by Enable (unchanged %v, err %v)", f.path, ok, err)
+		}
 	}
 	stateFile := filepath.Join(e.dirs.Run, StateFileName)
 	deadline := time.Now().Add(10 * time.Second)
@@ -954,6 +1006,9 @@ func TestLiveDevToolsOnRunner(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), "\n")
 	if got := strings.TrimSpace(lines[len(lines)-1]); got != want {
 		t.Fatalf("HTTPS_PROXY in a new PowerShell = %q, want %q", got, want)
+	}
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != userPrompt {
+		t.Fatalf("the prompt is not the user's own %q (our block must wrap it): %q", userPrompt, lines)
 	}
 
 	e.mustCall("POST", "/v1/devtools", map[string]bool{"on": false}, http.StatusOK)

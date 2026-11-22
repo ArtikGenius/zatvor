@@ -87,7 +87,9 @@ jobs:
       - if: matrix.os == 'windows-latest'
         run: echo "ZATVOR_XRAY=$GITHUB_WORKSPACE/third_party/xray/bin/windows-amd64/xray.exe" >> "$GITHUB_ENV"
       - run: go vet -tags systemtest ./...
-      - run: go test -tags systemtest -v ${{ matrix.pkgs }}
+      # -p 1: the live tests of different packages share the runner's
+      # system proxy (HKCU), so their test binaries must not overlap.
+      - run: go test -tags systemtest -p 1 -v ${{ matrix.pkgs }}
 
   secrets:
     runs-on: ubuntu-latest

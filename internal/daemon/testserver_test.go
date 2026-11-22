@@ -1,9 +1,9 @@
 //go:build systemtest && windows
 
-// This file is part of the live acceptance tests only (build tags
-// systemtest and windows; no release build sets systemtest): it starts the
-// local servers the live daemon connects to, reusing the internal/e2e
-// helpers.
+// This file is part of the live acceptance tests only (a test file with
+// build tags systemtest and windows, so no build of a command ever links
+// internal/e2e; R55): it starts the local servers the live daemon connects
+// to, reusing the internal/e2e helpers.
 
 package daemon
 
