@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -382,6 +383,41 @@ func TestKeyErrorsTyped(t *testing.T) {
 		}
 		if _, err := FileKey(wide).Key(); !errors.Is(err, ErrKey) {
 			t.Errorf("wide key file: %v, want ErrKey", err)
+		}
+	}
+}
+
+// Concurrent first use: every caller gets the same complete key; no one sees
+// a missing, empty or half-written file.
+func TestFileKeyConcurrentCreate(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		path := filepath.Join(t.TempDir(), "key")
+		const n = 8
+		keys := make([][]byte, n)
+		errs := make([]error, n)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				keys[i], errs[i] = FileKey(path).Key()
+			}()
+		}
+		close(start)
+		wg.Wait()
+		for i := 0; i < n; i++ {
+			if errs[i] != nil {
+				t.Fatalf("round %d caller %d: %v", round, i, errs[i])
+			}
+			if !bytes.Equal(keys[i], keys[0]) || len(keys[i]) != KeySize {
+				t.Fatalf("round %d: callers got different keys", round)
+			}
+		}
+		ents, _ := os.ReadDir(filepath.Dir(path))
+		if len(ents) != 1 {
+			t.Fatalf("round %d: leftover files %v", round, ents)
 		}
 	}
 }
