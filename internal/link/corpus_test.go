@@ -116,6 +116,29 @@ func TestOutboundCorpus(t *testing.T) {
 	}
 }
 
+// A TCP header (vless headerType, vmess type with net tcp) would change the
+// wire format; Outbound refuses it rather than drop it.
+func TestOutboundCorpusTCPHeaderUnsupported(t *testing.T) {
+	found := 0
+	for _, c := range loadCorpus(t) {
+		if !strings.HasSuffix(c.want.Remark, "tcp http header") {
+			continue
+		}
+		found++
+		n, err := Parse(c.link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Outbound(n, "proxy")
+		if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "tcp header") {
+			t.Errorf("%s:%d: err = %v, want ErrUnsupported naming the tcp header", c.file, c.line, err)
+		}
+	}
+	if found != 2 {
+		t.Fatalf("found %d tcp-header corpus lines, want 2", found)
+	}
+}
+
 // TestOutboundBuildsInXray feeds every corpus outbound to xray-core's own
 // config loader, so shapes Xray rejects fail here, not at connect time.
 func TestOutboundBuildsInXray(t *testing.T) {

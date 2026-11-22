@@ -141,6 +141,17 @@ func stream(n Node) (*ojson.Object, error) {
 	default:
 		return nil, fmt.Errorf("%w: transport %q", ErrUnsupported, network)
 	}
+	if network == "tcp" {
+		// An HTTP header obfuscates the TCP stream; dropping it would
+		// connect with the wrong wire format.
+		header := p["headerType"]
+		if n.Scheme == "vmess" {
+			header = p["type"]
+		}
+		if header != "" && header != "none" {
+			return nil, fmt.Errorf("%w: tcp header %q", ErrUnsupported, printable(header))
+		}
+	}
 	ss := obj("network", network, "security", security)
 	switch security {
 	case "none":
