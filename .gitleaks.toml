@@ -2,5 +2,6 @@
 useDefault = true
 
 [allowlist]
-description = "amneziawg.conf fixture holds freshly generated test keys that were never used anywhere"
+description = "Known non-secrets: amneziawg.conf fixture test keys (never used anywhere) and the public HMAC label of the frozen HWID algorithm (ADR 0008)"
 paths = ['''^testdata/fixtures/amneziawg\.conf$''']
+regexes = ['''^zatvor-hwid-v1$''']

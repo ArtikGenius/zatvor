@@ -13,8 +13,10 @@ import (
 var ErrExtRef = errors.New("geo: ext: references are not supported")
 
 // NeededTags returns the sorted, deduplicated geosite and geoip tag names
-// (without prefix) referenced from routing.rules[].domain|ip and
-// dns.servers[].domains|expectIPs.
+// (without prefix) referenced from routing.rules[].domain|domains|ip|source|
+// sourceIP|localIP, dns.servers[].domains|expectIPs|expectedIPs|unexpectedIPs
+// and the keys of dns.hosts. Negated forms ("!geoip:cn", "geoip:!cn") name
+// the tag without "!".
 func NeededTags(cfg []byte) (site []string, ip []string, err error) {
 	var root map[string]any
 	if err := json.Unmarshal(cfg, &root); err != nil {
@@ -22,6 +24,21 @@ func NeededTags(cfg []byte) (site []string, ip []string, err error) {
 	}
 	sites, ips := map[string]struct{}{}, map[string]struct{}{}
 
+	add := func(s string) error {
+		// Xray strips any number of leading "!" (reverse match) before the
+		// prefix and before a geoip code; for domains "!" is not special,
+		// but collecting the tag anyway is harmless.
+		s = strings.TrimLeft(s, "!")
+		switch {
+		case strings.HasPrefix(s, "ext:"):
+			return ErrExtRef
+		case strings.HasPrefix(s, "geosite:"):
+			sites[strings.TrimLeft(strings.TrimPrefix(s, "geosite:"), "!")] = struct{}{}
+		case strings.HasPrefix(s, "geoip:"):
+			ips[strings.TrimLeft(strings.TrimPrefix(s, "geoip:"), "!")] = struct{}{}
+		}
+		return nil
+	}
 	collect := func(obj any, keys ...string) error {
 		m, ok := obj.(map[string]any)
 		if !ok {
@@ -30,17 +47,10 @@ func NeededTags(cfg []byte) (site []string, ip []string, err error) {
 		for _, k := range keys {
 			list, _ := m[k].([]any)
 			for _, v := range list {
-				s, ok := v.(string)
-				if !ok {
-					continue
-				}
-				switch {
-				case strings.HasPrefix(s, "ext:"):
-					return ErrExtRef
-				case strings.HasPrefix(s, "geosite:"):
-					sites[strings.TrimPrefix(s, "geosite:")] = struct{}{}
-				case strings.HasPrefix(s, "geoip:"):
-					ips[strings.TrimPrefix(s, "geoip:")] = struct{}{}
+				if s, ok := v.(string); ok {
+					if err := add(s); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -50,7 +60,7 @@ func NeededTags(cfg []byte) (site []string, ip []string, err error) {
 	if r, ok := root["routing"].(map[string]any); ok {
 		rules, _ := r["rules"].([]any)
 		for _, rule := range rules {
-			if err := collect(rule, "domain", "ip"); err != nil {
+			if err := collect(rule, "domain", "domains", "ip", "source", "sourceIP", "localIP"); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -58,7 +68,13 @@ func NeededTags(cfg []byte) (site []string, ip []string, err error) {
 	if d, ok := root["dns"].(map[string]any); ok {
 		servers, _ := d["servers"].([]any)
 		for _, s := range servers {
-			if err := collect(s, "domains", "expectIPs"); err != nil {
+			if err := collect(s, "domains", "expectIPs", "expectedIPs", "unexpectedIPs"); err != nil {
+				return nil, nil, err
+			}
+		}
+		hosts, _ := d["hosts"].(map[string]any)
+		for k := range hosts {
+			if err := add(k); err != nil {
 				return nil, nil, err
 			}
 		}

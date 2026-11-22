@@ -37,5 +37,30 @@ keeps its `v1` name for the same reason.
 - Stage 1 implements it exactly and adds a golden-vector test that fails on any change.
 - A machine reinstall that keeps the machine id keeps its slot; a changed machine id (new OS install on
   Windows) is a new device, as with any HWID scheme.
-- The exact form of `subscription_host` (case, port, path) is not fixed by the spec. Stage 1 must
-  specify it here, with a golden vector, before the first release; from then on it is frozen too.
+- Input normalisation is enforced in code by `hwid.ID` and is frozen:
+  - `machine_id`: `strings.ToLower(strings.TrimSpace(machine_id))` on every OS.
+  - `subscription_host`: `hwid.NormalizeHost`. Accepts `host`, `host:port`, `[v6]`, `[v6]:port` or a bare IPv6
+    address; lower-cases; strips port, brackets, an IPv6 zone (`%eth0`) and one trailing dot; converts IDN to
+    punycode with `golang.org/x/net/idna` Lookup profile (on error the lower-cased input is kept).
+  - Vectors: `Sub.Example.COM:8443` -> `sub.example.com`; `sub.example.com.` -> `sub.example.com`;
+    `[2001:DB8::1]:443` -> `2001:db8::1`; `fe80::1%eth0` -> `fe80::1`; `пример.рф` -> `xn--e1afmkfd.xn--p1ai`.
+
+## Golden vector
+
+```
+machine_id        = 00000000-0000-0000-0000-000000000000
+subscription_host = sub.example.com
+x-hwid            = 32fe07fe2e30f9601fdac3197ad16506
+```
+
+Cross-checked with `printf '%s' "<machine_id><host>" | openssl dgst -sha256 -hmac zatvor-hwid-v1`. Pinned by
+`TestHWIDVector` in `internal/hwid`.
+
+Machine id normalisation vector:
+
+```
+machine_id (raw)  = "  00000000-0000-0000-0000-00000000ABCD\n"
+normalised        = 00000000-0000-0000-0000-00000000abcd
+subscription_host = sub.example.com
+x-hwid            = 91b5d68392869f6d1f5aa4038b2c0289
+```

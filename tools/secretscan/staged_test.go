@@ -42,3 +42,53 @@ func TestScanStagedCoversRenameAndEdit(t *testing.T) {
 		t.Fatalf("findings = %+v", got)
 	}
 }
+
+// The staged scan and the full scan must report the same findings for the
+// same content: a UUID is flagged by both until it is allow-listed, and the
+// allow list is honoured by both.
+func TestStagedAndFullScanAgree(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	git(t, "init", "-q")
+	const id = "12345678-1234-1234-1234-123456789abc"
+	if err := os.WriteFile("a.txt", []byte("ok\nid "+id+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "add", "a.txt")
+
+	for name, allow := range map[string]AllowList{"unlisted": nil, "allowed": ParseAllowList([]byte(id + " # fake\n"))} {
+		staged, err := scanStaged(allow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		full, err := scanPaths([]string{"."}, allow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(staged) != len(full) {
+			t.Fatalf("%s: staged %+v != full %+v", name, staged, full)
+		}
+		if want := map[string]int{"unlisted": 1, "allowed": 0}[name]; len(staged) != want {
+			t.Fatalf("%s: got %d findings, want %d: %+v", name, len(staged), want, staged)
+		}
+		for i := range staged {
+			if staged[i] != full[i] {
+				t.Fatalf("%s: staged %+v != full %+v", name, staged[i], full[i])
+			}
+		}
+	}
+}
+
+// run() with --staged must exit non-zero when a staged file has a finding.
+func TestRunStagedExitCode(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	git(t, "init", "-q")
+	if err := os.WriteFile("a.txt", []byte("12345678-1234-1234-1234-123456789abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "add", "a.txt")
+	if got := run([]string{"--staged"}); got != 1 {
+		t.Fatalf("run --staged = %d, want 1", got)
+	}
+}

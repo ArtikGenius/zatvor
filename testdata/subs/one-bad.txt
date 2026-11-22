@@ -1,0 +1,3 @@
+vless://REPLACE_ME_uuid@a.example.com:443?encryption=none&security=tls&sni=a.example.com&type=tcp#node%20a
+vless://broken
+trojan://REPLACE_ME_password@b.example.com:443?security=tls&sni=b.example.com#node%20b

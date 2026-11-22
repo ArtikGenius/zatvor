@@ -1,0 +1,4 @@
+socks://REPLACE_ME_user:REPLACE_ME_pass@socks.example.com:1080#plain	{"Scheme":"socks","Remark":"plain","Address":"socks.example.com","Port":1080,"Params":{"user":"REPLACE_ME_user","password":"REPLACE_ME_pass"}}
+socks://UkVQTEFDRV9NRV91c2VyOlJFUExBQ0VfTUVfcGFzcw==@socks.example.com:1080#b64user	{"Scheme":"socks","Remark":"b64user","Address":"socks.example.com","Port":1080,"Params":{"user":"REPLACE_ME_user","password":"REPLACE_ME_pass"}}
+socks://UkVQTEFDRV9NRV91c2VyOlJFUExBQ0VfTUVfcGFzc0Bzb2Nrcy5leGFtcGxlLmNvbToxMDgw#b64all	{"Scheme":"socks","Remark":"b64all","Address":"socks.example.com","Port":1080,"Params":{"user":"REPLACE_ME_user","password":"REPLACE_ME_pass"}}
+socks5://socks.example.com:1081#anon	{"Scheme":"socks","Remark":"anon","Address":"socks.example.com","Port":1081,"Params":{}}
