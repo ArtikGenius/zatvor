@@ -27,6 +27,9 @@ const (
 	CodeBodyTooLarge  = "body_too_large"
 	CodeSettingsEmpty = "settings_empty"
 	CodeInternal      = "internal"
+	// CodeShuttingDown: the daemon began to shut down; nothing reached the
+	// services (HTTP 503).
+	CodeShuttingDown = "shutting_down"
 )
 
 // Error is an API error with a stable code and an English developer
@@ -51,6 +54,7 @@ var codeStatus = map[string]int{
 	CodeBodyTooLarge:      http.StatusRequestEntityTooLarge,
 	CodeSettingsEmpty:     http.StatusBadRequest,
 	CodeInternal:          http.StatusInternalServerError,
+	CodeShuttingDown:      http.StatusServiceUnavailable,
 	subsvc.CodeInvalidURL: http.StatusBadRequest,
 	// subsvc.CodeNotFound is "not_found" as well.
 	engine.CodeProxyConflict:    http.StatusConflict,

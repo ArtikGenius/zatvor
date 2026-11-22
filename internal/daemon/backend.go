@@ -29,11 +29,9 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/xrayrun"
 )
 
-// codeShuttingDown: an operation arrived after the daemon began to shut
-// down; nothing reached the services.
-const codeShuttingDown = "shutting_down"
-
-var errStopping = &api.Error{Code: codeShuttingDown, Message: "the daemon is shutting down"}
+// errStopping: an operation arrived after the daemon began to shut down;
+// nothing reached the services.
+var errStopping = &api.Error{Code: api.CodeShuttingDown, Message: "the daemon is shutting down"}
 
 // stateRetry is how soon a failed dev-tool state-file write is tried again.
 const stateRetry = time.Second
@@ -155,9 +153,11 @@ func (b *backend) savePorts(p gen.Ports) error {
 	return b.saveSettings(func(s *settings.Settings) { s.Ports = p })
 }
 
+// buildOptions always builds the dev-tools inbound (R56, loopback only),
+// so turning dev tools on while connected works at once: the state file
+// and the tool settings then name a port Xray already serves.
 func (b *backend) buildOptions() engine.BuildOptions {
-	s := b.settings()
-	return engine.BuildOptions{DevTools: s.DevTools || b.devOn.Load(), LogLevel: s.LogLevel}
+	return engine.BuildOptions{DevTools: true, LogLevel: b.settings().LogLevel}
 }
 
 // ---- the operation gate ----

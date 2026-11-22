@@ -615,6 +615,8 @@ func TestErrorBodiesCarryNoSecret(t *testing.T) {
 			"PUT", "/v1/settings", `{"version":1}`, 400, `{"code":"settings_empty","message":"refusing to overwrite the settings with empty ones"}`},
 		{"api error", fmt.Errorf("%s: %w", subURL, &api.Error{Code: api.CodeNotFound, Message: "no such profile"}),
 			"POST", "/v1/connect", `{"profile":"zz"}`, 404, `{"code":"not_found","message":"no such profile"}`},
+		{"shutting down", &api.Error{Code: api.CodeShuttingDown, Message: "the daemon is shutting down"},
+			"POST", "/v1/connect", `{"profile":"p1"}`, 503, `{"code":"shutting_down","message":"the daemon is shutting down"}`},
 		{"unknown error", fmt.Errorf("dial %s: connection refused", subURL),
 			"DELETE", "/v1/subscriptions/s1", "", 500, `{"code":"internal","message":"internal error"}`},
 	}
@@ -961,5 +963,41 @@ func TestDiagRoute(t *testing.T) {
 	} {
 		code, _, body := e.diagReq(mod)
 		wantForbidden(t, "diag "+name, code, string(body))
+	}
+}
+
+// R57: Republish writes the token and discovery files again for the
+// running listener; nothing is restarted.
+func TestRepublishRewritesFiles(t *testing.T) {
+	e := startServer(t, newFake())
+	before, err := api.ReadDiscovery(e.dirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(e.dirs.Run); err != nil { // a cleaner took the whole directory
+		t.Fatal(err)
+	}
+	if err := e.srv.Republish(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := api.ReadDiscovery(e.dirs)
+	if err != nil || after != before {
+		t.Fatalf("discovery = %+v, %v; want %+v", after, err, before)
+	}
+	tok, err := api.ReadToken(e.dirs)
+	if err != nil || tok != e.token {
+		t.Fatalf("token rewritten as a different one (%v)", err)
+	}
+	if st, body := e.req("GET", "/v1/status", "", nil); st != 200 {
+		t.Fatalf("status after Republish: %d %s", st, body)
+	}
+	e.srv.Stop()
+	if err := e.srv.Republish(); err == nil {
+		t.Fatal("Republish after Stop succeeded")
+	}
+	for _, name := range []string{api.TokenFile, api.DiscoveryFile} {
+		if _, err := os.Stat(filepath.Join(e.dirs.Run, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s there after Stop (%v)", name, err)
+		}
 	}
 }

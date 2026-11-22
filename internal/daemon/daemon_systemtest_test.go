@@ -150,12 +150,12 @@ func stdinContext() (context.Context, context.CancelFunc) {
 // the same supervisor.Run with the journal of the live mode, its reverters
 // and the instance lock before every revert.
 func runHelperSupervisor(ctx context.Context, opts Options, lockName string, clock minDelayClock) int {
-	j, rs, closeRec, err := Reverters(opts)
+	rv, err := Reverters(opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "helper supervisor:", err)
 		return 1
 	}
-	defer closeRec()
+	defer rv.Close()
 	child := func() *exec.Cmd {
 		cmd := exec.Command(os.Args[0], helperChildArg, os.Args[2])
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -169,7 +169,8 @@ func runHelperSupervisor(ctx context.Context, opts Options, lockName string, clo
 		return rel, true
 	}
 	logf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, "helper "+format+"\n", a...) }
-	if err := supervisor.Run(ctx, child, j, rs, clock, supervisor.WithRevertLock(lock), supervisor.WithLogf(logf)); err != nil {
+	if err := supervisor.Run(ctx, child, rv.Journal, rv.Reverters, clock, supervisor.WithRevertLock(lock),
+		supervisor.WithLogf(logf), supervisor.WithAfterRevert(rv.Cleanup)); err != nil {
 		fmt.Fprintln(os.Stderr, "helper supervisor:", err)
 		return 1
 	}

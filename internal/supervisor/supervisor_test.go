@@ -459,3 +459,45 @@ func TestSupervisorRevertsOnCancelDuringBackoff(t *testing.T) {
 		t.Fatalf("restores %d, pending %d; want the crashed child's entry reverted", r.Restores(), pendingCount(t, j))
 	}
 }
+
+// Item 6: after its own revert the supervisor runs the after-revert
+// cleanup (the daemon's: empty the dev-tool state file), once, after the
+// journal was reverted; never when another instance holds the lock.
+func TestSupervisorAfterRevert(t *testing.T) {
+	t.Run("give-up", func(t *testing.T) {
+		c := newChild(t)
+		j, r := pendingJournal(t)
+		calls, restoresAt := 0, -1
+		err := wait(t, run(context.Background(), c.factory(-1, ""), j, r, newClock(),
+			supervisor.WithAfterRevert(func() error { calls++; restoresAt = r.Restores(); return nil })))
+		if !errors.Is(err, supervisor.ErrGaveUp) {
+			t.Fatalf("Run = %v, want ErrGaveUp", err)
+		}
+		if calls != 1 || restoresAt != 1 {
+			t.Fatalf("after-revert ran %d times, with %d restores done; want once, after the revert", calls, restoresAt)
+		}
+	})
+	t.Run("locked", func(t *testing.T) {
+		c := newChild(t)
+		j, r := pendingJournal(t)
+		calls := 0
+		_ = wait(t, run(context.Background(), c.factory(-1, ""), j, r, newClock(),
+			supervisor.WithRevertLock(func() (func(), bool) { return func() {}, false }),
+			supervisor.WithAfterRevert(func() error { calls++; return nil })))
+		if calls != 0 {
+			t.Fatal("after-revert ran while another instance owns the journal")
+		}
+	})
+	t.Run("clean exit", func(t *testing.T) {
+		c := newChild(t)
+		j, r := pendingJournal(t)
+		calls := 0
+		if err := wait(t, run(context.Background(), c.factory(0, "exit0"), j, r, newClock(),
+			supervisor.WithAfterRevert(func() error { calls++; return nil }))); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 0 {
+			t.Fatal("after-revert ran after a clean exit")
+		}
+	})
+}

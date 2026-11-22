@@ -26,7 +26,6 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/appdir"
 	"github.com/ArtikGenius/zatvor/internal/daemon"
 	"github.com/ArtikGenius/zatvor/internal/instance"
-	"github.com/ArtikGenius/zatvor/internal/journal"
 	"github.com/ArtikGenius/zatvor/internal/safemode"
 	"github.com/ArtikGenius/zatvor/internal/supervisor"
 )
@@ -134,20 +133,20 @@ func childArgs(dirs appdir.Dirs, mode string) []string {
 // journal. already is true, with nothing opened, when another instance
 // holds the lock. The lock is released before returning: the child takes
 // it.
-func openSupervisorJournal(opts daemon.Options, name string) (*journal.Journal, map[string]journal.Reverter, func() error, bool, error) {
+func openSupervisorJournal(opts daemon.Options, name string) (*daemon.RevertSet, bool, error) {
 	release, already, err := instance.Acquire(name)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, false, err
 	}
 	if already {
-		return nil, nil, nil, true, nil
+		return nil, true, nil
 	}
 	defer release()
-	j, rs, closeRec, err := daemon.Reverters(opts)
+	rv, err := daemon.Reverters(opts)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, false, err
 	}
-	return j, rs, closeRec, false, nil
+	return rv, false, nil
 }
 
 // runChild runs the daemon until a signal or until stdin closes.
@@ -171,7 +170,7 @@ func runChild(ctx context.Context, opts daemon.Options, stdin io.Reader, stderr 
 // launch while a daemon runs only forwards to it.
 func runSupervisor(ctx context.Context, opts daemon.Options, exe string, stdout, stderr io.Writer) int {
 	name := instance.Name(opts.Dirs)
-	j, rs, closeRec, already, err := openSupervisorJournal(opts, name)
+	rv, already, err := openSupervisorJournal(opts, name)
 	if err != nil {
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
 		return 1
@@ -183,7 +182,7 @@ func runSupervisor(ctx context.Context, opts daemon.Options, exe string, stdout,
 		}
 		return 0
 	}
-	defer closeRec()
+	defer rv.Close()
 	args := childArgs(opts.Dirs, modeArg(opts.Mode))
 	child := func() *exec.Cmd {
 		cmd := exec.Command(exe, args...)
@@ -198,8 +197,10 @@ func runSupervisor(ctx context.Context, opts daemon.Options, exe string, stdout,
 		}
 		return rel, true
 	}
-	// A give-up (*supervisor.GaveUpError) has already reverted the journal.
-	if err := supervisor.Run(ctx, child, j, rs, nil, supervisor.WithRevertLock(lock), supervisor.WithLogf(logf)); err != nil {
+	// A give-up (*supervisor.GaveUpError) has already reverted the journal
+	// and emptied the dev-tool state file.
+	if err := supervisor.Run(ctx, child, rv.Journal, rv.Reverters, nil, supervisor.WithRevertLock(lock),
+		supervisor.WithLogf(logf), supervisor.WithAfterRevert(rv.Cleanup)); err != nil {
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
 		return 1
 	}

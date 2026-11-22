@@ -64,8 +64,16 @@ func (e *GaveUpError) Unwrap() error { return ErrGaveUp }
 type Option func(*config)
 
 type config struct {
-	lock func() (release func(), ok bool)
-	logf func(format string, args ...any)
+	lock        func() (release func(), ok bool)
+	logf        func(format string, args ...any)
+	afterRevert func() error
+}
+
+// WithAfterRevert runs f after each revert of the supervisor's own, still
+// under the revert lock; the daemon's empties the dev-tool state file
+// (daemon.Reverters). It is not run when the lock was refused.
+func WithAfterRevert(f func() error) Option {
+	return func(c *config) { c.afterRevert = f }
 }
 
 // WithRevertLock makes every revert take lock first. When ok is false
@@ -201,6 +209,11 @@ func (c *config) revert(j *journal.Journal, rs map[string]journal.Reverter) (res
 			failed++
 		}
 		c.logf("supervisor: revert %s: %s", r.Kind, r.Outcome)
+	}
+	if c.afterRevert != nil {
+		if err := c.afterRevert(); err != nil {
+			c.logf("supervisor: the cleanup after the revert failed")
+		}
 	}
 	return restored, skipped, failed, false
 }

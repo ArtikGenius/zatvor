@@ -286,12 +286,13 @@ func TestSupervisorJournalIsTheModes(t *testing.T) {
 	begin(t, filepath.Join(dirs.Journal, "safe"), "ras:safe-entry")
 	begin(t, filepath.Join(dirs.Journal, "live"), "ras:live-entry")
 	opts := daemon.Options{Dirs: dirs, Mode: safemode.Safe, Env: func(string) string { return "" }}
-	j, rs, closeRec, already, err := openSupervisorJournal(opts, testLock(t, dirs))
+	rv, already, err := openSupervisorJournal(opts, testLock(t, dirs))
 	if err != nil || already {
 		t.Fatalf("open: already=%v err=%v", already, err)
 	}
-	defer closeRec()
-	p, err := j.Pending()
+	defer rv.Close()
+	rs := rv.Reverters
+	p, err := rv.Journal.Pending()
 	if err != nil || len(p) != 1 || p[0].Target != "ras:safe-entry" {
 		t.Fatalf("pending = %+v, %v; want only the safe journal's entry", p, err)
 	}
@@ -324,7 +325,7 @@ func TestSupervisorJournalNotOpenedWhileLocked(t *testing.T) {
 	}
 	defer release()
 	opts := daemon.Options{Dirs: dirs, Mode: safemode.Safe, Env: func(string) string { return "" }}
-	_, _, _, already, err := openSupervisorJournal(opts, name)
+	_, already, err := openSupervisorJournal(opts, name)
 	if err != nil || !already {
 		t.Fatalf("already=%v err=%v, want already", already, err)
 	}

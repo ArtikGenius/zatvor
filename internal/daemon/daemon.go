@@ -308,7 +308,7 @@ func (d *daemon) run(ctx context.Context) error {
 			exit()
 			return nil
 		case <-o.Clock.After(discoveryCheck):
-			d.checkDiscovery(ctx, srv, b)
+			d.checkDiscovery(srv)
 		}
 	}
 }
@@ -330,18 +330,18 @@ func (d *daemon) startAPI(ctx context.Context, srv *api.Server, b *backend) erro
 	return nil
 }
 
-// checkDiscovery restarts the API when its discovery or token file
-// disappeared while it runs (K34), so that clients find it again.
-func (d *daemon) checkDiscovery(ctx context.Context, srv *api.Server, b *backend) {
+// checkDiscovery writes the API's discovery and token files again when
+// they disappeared while it runs (K34), so that clients find it again. The
+// listener keeps running, so operations in flight are not cancelled (R57).
+func (d *daemon) checkDiscovery(srv *api.Server) {
 	_, derr := os.Stat(filepath.Join(d.opts.Dirs.Run, api.DiscoveryFile))
 	_, terr := os.Stat(filepath.Join(d.opts.Dirs.Run, api.TokenFile))
 	if derr == nil && terr == nil {
 		return
 	}
-	d.logf("api: the discovery files are gone; restarting the API")
-	srv.Stop()
-	if err := d.startAPI(ctx, srv, b); err != nil {
-		d.logf("api: restart failed")
+	d.logf("api: the discovery files are gone; writing them again")
+	if err := srv.Republish(); err != nil {
+		d.logf("api: cannot write the discovery files")
 	}
 }
 
@@ -482,16 +482,32 @@ func (s *system) reverters() map[string]journal.Reverter {
 	return map[string]journal.Reverter{sysproxy.Kind: s.proxy.Reverter(), devtools.Kind: s.dev.Reverter()}
 }
 
+// RevertSet is what the supervisor needs to revert in the daemon's place.
+type RevertSet struct {
+	// Journal is the journal of the mode (R16), with the daemon's
+	// Reverters.
+	Journal   *journal.Journal
+	Reverters map[string]journal.Reverter
+	// Cleanup runs after the revert: it empties the dev-tool state file,
+	// so no shell or wrapper routes to the dead daemon's port (R23).
+	Cleanup func() error
+	// Close releases the safe-mode log.
+	Close func() error
+}
+
 // Reverters opens the journal of opts.Mode and returns it with the
-// reverters the daemon uses, for the supervisor's give-up revert (R16).
-// close releases the safe-mode log.
-func Reverters(opts Options) (j *journal.Journal, rs map[string]journal.Reverter, close func() error, err error) {
+// reverters and the cleanup the daemon uses, for the supervisor's revert.
+func Reverters(opts Options) (*RevertSet, error) {
 	opts.defaults()
 	sys, err := openSystem(opts)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-	return sys.journal, sys.reverters(), sys.close, nil
+	stateFile := filepath.Join(opts.Dirs.Run, StateFileName)
+	return &RevertSet{
+		Journal: sys.journal, Reverters: sys.reverters(), Close: sys.close,
+		Cleanup: func() error { return writeState(stateFile, "") },
+	}, nil
 }
 
 func devToolRoots(o Options) devtools.Roots {

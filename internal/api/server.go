@@ -148,16 +148,9 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
-	tokenPath := filepath.Join(s.dirs.Run, TokenFile)
-	if err := writeUserOnly(tokenPath, []byte(token)); err != nil {
+	if err := s.publish(port, token); err != nil {
 		ln.Close()
-		return "", fmt.Errorf("api: write token: %w", err)
-	}
-	disc, _ := json.Marshal(Discovery{Version: Version, Port: port, PID: os.Getpid()})
-	if err := writeUserOnly(filepath.Join(s.dirs.Run, DiscoveryFile), disc); err != nil {
-		ln.Close()
-		os.Remove(tokenPath)
-		return "", fmt.Errorf("api: write discovery: %w", err)
+		return "", err
 	}
 
 	base, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -179,6 +172,39 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 	}()
 	s.srv, s.cancel, s.served, s.port, s.token = srv, cancel, served, port, token
 	return addr, nil
+}
+
+// publish writes the token file and after it the discovery file.
+func (s *Server) publish(port int, token string) error {
+	tokenPath := filepath.Join(s.dirs.Run, TokenFile)
+	if err := writeUserOnly(tokenPath, []byte(token)); err != nil {
+		return fmt.Errorf("api: write token: %w", err)
+	}
+	disc, _ := json.Marshal(Discovery{Version: Version, Port: port, PID: os.Getpid()})
+	if err := writeUserOnly(filepath.Join(s.dirs.Run, DiscoveryFile), disc); err != nil {
+		os.Remove(tokenPath)
+		return fmt.Errorf("api: write discovery: %w", err)
+	}
+	return nil
+}
+
+// Republish writes the token and discovery files of the running server
+// again, for when a cleaner deleted them (K34); dirs.Run is created again
+// if it is gone. The listener, the token and every request and operation
+// in flight are left as they are (R57).
+func (s *Server) Republish() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.srv == nil {
+		return errors.New("api: not started")
+	}
+	if err := os.MkdirAll(s.dirs.Run, 0o700); err != nil {
+		return fmt.Errorf("api: run directory: %w", err)
+	}
+	if err := appdir.RestrictToUser(s.dirs.Run); err != nil {
+		return fmt.Errorf("api: run directory: %w", err)
+	}
+	return s.publish(s.port, s.token)
 }
 
 // Stop ends every event stream and operation, closes the listener, and

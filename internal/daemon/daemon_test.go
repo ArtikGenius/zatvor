@@ -50,11 +50,21 @@ type fakeRunner struct {
 	mu    sync.Mutex
 	ev    chan xrayrun.Event
 	stops int
+	cfg   []byte // the config of the last Start
 }
 
 func (r *fakeRunner) Start(ctx context.Context, cfg []byte, ready xrayrun.ReadyCheck) error {
+	r.mu.Lock()
+	r.cfg = append([]byte(nil), cfg...)
+	r.mu.Unlock()
 	r.ev <- xrayrun.Event{Kind: xrayrun.Started}
 	return nil
+}
+
+func (r *fakeRunner) lastConfig() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cfg
 }
 
 func (r *fakeRunner) Stop(time.Duration) error {
@@ -170,7 +180,7 @@ func newRig(t *testing.T) *rig {
 				d.Assets = fakeGeo{}
 				d.NewRunner = func(string) engine.Runner { return r.runner }
 				d.XrayTest = func(context.Context, []byte, string) error { return nil }
-				d.Ready = func(gen.Ports) xrayrun.ReadyCheck { return func(context.Context) error { return nil } }
+				d.Ready = func(gen.Input) xrayrun.ReadyCheck { return func(context.Context) error { return nil } }
 				d.Checker = func(context.Context, subfetch.Dialer) engine.CheckResult {
 					return engine.CheckResult{Status: engine.OK, IPv4: "203.0.113.9"}
 				}
@@ -834,8 +844,8 @@ func TestOpsRefusedWhileShuttingDown(t *testing.T) {
 	check := func(name string, err error) {
 		t.Helper()
 		var ae *api.Error
-		if !errors.As(err, &ae) || ae.Code != codeShuttingDown {
-			t.Errorf("%s = %v, want code %s", name, err, codeShuttingDown)
+		if !errors.As(err, &ae) || ae.Code != api.CodeShuttingDown {
+			t.Errorf("%s = %v, want code %s", name, err, api.CodeShuttingDown)
 		}
 	}
 	check("Disconnect", b.Disconnect(context.Background()))
@@ -1009,5 +1019,160 @@ func TestStateFileWriteRetried(t *testing.T) {
 	}
 	if err := run.stop(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// R56: the dev-tools inbound is always in the config, so turning dev tools
+// on while connected routes them through Xray at once.
+func TestDevToolsOnWhileConnectedServed(t *testing.T) {
+	r := newRig(t)
+	id := r.seed()
+	run := r.start()
+	run.connect(id)
+	if st, body := run.call("POST", "/v1/devtools", map[string]bool{"on": true}); st != 200 {
+		t.Fatalf("devtools on: %d %s", st, body)
+	}
+	st, body := run.call("GET", "/v1/status", nil)
+	if st != 200 {
+		t.Fatalf("state: %d %s", st, body)
+	}
+	var state struct {
+		Phase string    `json:"phase"`
+		Ports gen.Ports `json:"ports"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != string(engine.Connected) || state.Ports.DevTools == 0 {
+		t.Fatalf("state = %s", body)
+	}
+	var cfg struct {
+		Inbounds []struct {
+			Tag    string `json:"tag"`
+			Listen string `json:"listen"`
+			Port   int    `json:"port"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(r.runner.lastConfig(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, in := range cfg.Inbounds {
+		if in.Tag == gen.TagDevTools {
+			found = in.Port == state.Ports.DevTools && in.Listen == "127.0.0.1"
+		}
+	}
+	if !found {
+		t.Fatalf("running config has no loopback %s inbound on port %d: %+v", gen.TagDevTools, state.Ports.DevTools, cfg.Inbounds)
+	}
+	want := fmt.Sprintf("http://127.0.0.1:%d", state.Ports.DevTools)
+	waitState(t, r.dirs, func(s string) bool { return s == want })
+}
+
+// Item 6: the supervisor's revert set empties the dev-tool state file
+// after its revert, so no shell or wrapper keeps the dead daemon's port.
+func TestRevertSetCleanupEmptiesStateFile(t *testing.T) {
+	r := newRig(t)
+	state := filepath.Join(r.dirs.Run, StateFileName)
+	if err := os.WriteFile(state, []byte("http://127.0.0.1:45678"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rv, err := Reverters(r.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rv.Close()
+	if rv.Journal == nil || rv.Reverters[sysproxy.Kind] == nil {
+		t.Fatalf("revert set = %+v", rv)
+	}
+	if err := rv.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(state); err != nil || len(b) != 0 {
+		t.Fatalf("state file after the cleanup = %q, %v; want empty", b, err)
+	}
+}
+
+// blockingRunner holds Start until release is closed.
+type blockingRunner struct {
+	*fakeRunner
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (b *blockingRunner) Start(ctx context.Context, cfg []byte, ready xrayrun.ReadyCheck) error {
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return b.fakeRunner.Start(ctx, cfg, ready)
+}
+
+// Item 9 (R57): rewriting the vanished discovery files does not restart the
+// API, so a Connect in flight finishes.
+func TestDiscoveryRewriteKeepsInflightConnect(t *testing.T) {
+	r := newRig(t)
+	clk := &manualClock{now: time.Unix(2_000_000, 0)}
+	r.opts.Clock = clk
+	id := r.seed()
+	br := &blockingRunner{fakeRunner: r.runner, entered: make(chan struct{}), release: make(chan struct{})}
+	prev := r.opts.hooks.engine
+	r.opts.hooks.engine = func(d *engine.Deps) {
+		prev(d)
+		d.NewRunner = func(string) engine.Runner { return br }
+	}
+	run := r.start()
+	tok, err := api.ReadToken(r.dirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := make(chan string, 1)
+	go func() {
+		req, _ := http.NewRequest("POST", "http://"+run.addr+"/v1/connect", strings.NewReader(`{"profile":"`+id+`"}`))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		c := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 20 * time.Second}
+		resp, err := c.Do(req)
+		if err != nil {
+			res <- "error: " + err.Error()
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		res <- fmt.Sprintf("%d %s", resp.StatusCode, bytes.TrimSpace(b))
+	}()
+	<-br.entered
+	disc := filepath.Join(r.dirs.Run, api.DiscoveryFile)
+	for _, name := range []string{api.DiscoveryFile, api.TokenFile} {
+		if err := os.Remove(filepath.Join(r.dirs.Run, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		clk.Advance(discoveryCheck)
+		if _, err := os.Stat(disc); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the discovery file was not written again")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if d, err := api.ReadDiscovery(r.dirs); err != nil || fmt.Sprintf("127.0.0.1:%d", d.Port) != run.addr {
+		t.Fatalf("discovery = %+v, %v; want the same port as %s", d, err, run.addr)
+	}
+	close(br.release)
+	select {
+	case got := <-res:
+		if !strings.HasPrefix(got, "200 ") {
+			t.Fatalf("connect across the rewrite = %s, want 200", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("connect did not return")
+	}
+	if st, body := run.call("GET", "/v1/status", nil); st != 200 || !strings.Contains(string(body), `"phase":"connected"`) {
+		t.Fatalf("status = %d %s", st, body)
 	}
 }
