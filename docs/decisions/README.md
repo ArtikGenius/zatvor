@@ -13,3 +13,5 @@ One file per decision: context, options, decision, consequences. Numbers are nev
 | [0007](0007-xray-pin-and-geo-merge.md) | Xray pin v26.11.9, verified fetch, roscomvpn-wins geo merge | accepted |
 | [0008](0008-hwid-algorithm.md) | HWID algorithm, frozen forever | accepted, frozen |
 | [0009](0009-local-api.md) | Local HTTP API on 127.0.0.1 with token | accepted |
+| [0010](0010-provider-routing-and-proxy-tag.md) | Provider routing is never rewritten; inbound tag choice; ProxyTag rule | accepted |
+| [0011](0011-store-format-and-backup.md) | Encrypted store format and one-generation backup | accepted |
