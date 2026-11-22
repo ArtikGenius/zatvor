@@ -69,16 +69,17 @@ if defined ZATVOR_PORT if not "!ZATVOR_PORT:~5!"=="" set "ZATVOR_PORT="
 set "ZATVOR_REST=!ZATVOR_PORT!"
 for %%C in (0 1 2 3 4 5 6 7 8 9) do if defined ZATVOR_REST set "ZATVOR_REST=!ZATVOR_REST:%%C=!"
 if defined ZATVOR_REST set "ZATVOR_PORT="
-rem The nesting depth, also read without parsing: digits only, else 0; three
-rem or more digits count as 99; leading zeros go so set /a reads decimal.
+rem The nesting depth, also read without parsing: digits only, else 0. Leading
+rem zeros go first, so set /a reads decimal; then three or more digits are 99.
 set "ZATVOR_D="
 if defined ZATVOR_WRAPPED set "ZATVOR_D=!ZATVOR_WRAPPED!"
 set "ZATVOR_REST=!ZATVOR_D!"
 for %%C in (0 1 2 3 4 5 6 7 8 9) do if defined ZATVOR_REST set "ZATVOR_REST=!ZATVOR_REST:%%C=!"
 if defined ZATVOR_REST set "ZATVOR_D="
 if not defined ZATVOR_D set "ZATVOR_D=0"
-if not "!ZATVOR_D:~2!"=="" set "ZATVOR_D=99"
 for /f "tokens=* delims=0" %%N in ("!ZATVOR_D!") do set "ZATVOR_D=%%N"
+if "!ZATVOR_D:0=!"=="" set "ZATVOR_D=0"
+if not "!ZATVOR_D:~2!"=="" set "ZATVOR_D=99"
 endlocal & set "ZATVOR_PORT=%ZATVOR_PORT%" & set "ZATVOR_DEPTH=%ZATVOR_D%"
 set /a ZATVOR_DEPTH=ZATVOR_DEPTH
 if %ZATVOR_DEPTH% GEQ 8 goto nested

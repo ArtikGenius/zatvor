@@ -1162,3 +1162,39 @@ func TestNoteWhenBlockIsNotLast(t *testing.T) {
 		t.Errorf("block not last: %+v", tg)
 	}
 }
+
+// A second Enable that changes our own journaled block (here: a new state
+// file path) chains on the first entry: Disable unwinds both and deletes
+// the file we created, with nothing reported as changed by someone else.
+func TestSecondEnableChainsOwnBlock(t *testing.T) {
+	e := newEnv(t)
+	mustEnable(t, e.m)
+	r := e.roots
+	r.StateFile = filepath.Join(filepath.Dir(r.StateFile), "devtools2.proxy")
+	m2 := testManager(r, e.j, e.fs)
+	mustEnable(t, m2)
+	if got := string(read(t, e.path("bash"))); !strings.Contains(got, "devtools2.proxy") || strings.Count(got, beginMarker) != 1 {
+		t.Fatalf("second Enable did not replace the block:\n%s", got)
+	}
+	mustDisable(t, m2)
+	if _, err := os.Stat(e.path("bash")); !os.IsNotExist(err) {
+		t.Errorf("the .bashrc we created is still there: %v", err)
+	}
+	for _, res := range m2.LastRevert() {
+		if res.Outcome != journal.Restored {
+			t.Errorf("%s: %s %v", res.Target, res.Outcome, res.Err)
+		}
+	}
+}
+
+// cmd cannot run here; at least the depth is cleaned of leading zeros
+// before the three-digit cap, as in the sh and ps1 wrappers (007 → 7).
+func TestCmdDepthStripsZerosBeforeCap(t *testing.T) {
+	w := cmdWrapper("codex", filepath.FromSlash("/z/bin"), filepath.FromSlash("/z/run/devtools.proxy"))
+	strip := strings.Index(w, `for /f "tokens=* delims=0"`)
+	zero := strings.Index(w, `if "!ZATVOR_D:0=!"=="" set "ZATVOR_D=0"`)
+	capAt := strings.Index(w, `set "ZATVOR_D=99"`)
+	if strip < 0 || zero < 0 || capAt < 0 || !(strip < zero && zero < capAt) {
+		t.Errorf("want strip zeros (%d), then all-zero → 0 (%d), then the cap (%d)", strip, zero, capAt)
+	}
+}

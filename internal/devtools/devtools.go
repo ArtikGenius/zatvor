@@ -160,10 +160,18 @@ func exists(p json.RawMessage) bool {
 }
 
 // ownPrev is the Prev that Enable journals. Every zatvor block is ours,
-// even one the journal lost, so a profile's Prev never holds a block.
-func (s *spec) ownPrev(prev json.RawMessage) json.RawMessage {
+// even one the journal lost, so a profile's Prev never holds a block that
+// is not journaled: such a block is recorded as "". A block that is the
+// Applied of a pending entry (a second Enable, say with a new state file)
+// is kept, so the new entry chains on that one and both unwind.
+func (s *spec) ownPrev(prev json.RawMessage, pending []journal.Entry, key string) json.RawMessage {
 	if s.json {
 		return prev
+	}
+	for _, e := range pending {
+		if e.Kind == Kind && e.Target == key && canon(e.Applied) == canon(prev) {
+			return prev
+		}
 	}
 	var p shellProjection
 	if json.Unmarshal(prev, &p) != nil {
@@ -404,7 +412,11 @@ func (m *Manager) Enable(port int) error {
 		}
 		key := targetKey(s.name, path)
 		begin := func(prev, applied json.RawMessage) (func(bool) error, error) {
-			id, err := m.j.Begin(journal.Entry{Kind: Kind, Target: key, Prev: s.ownPrev(prev), Applied: applied})
+			pending, err := m.j.Pending()
+			if err != nil {
+				return nil, err
+			}
+			id, err := m.j.Begin(journal.Entry{Kind: Kind, Target: key, Prev: s.ownPrev(prev, pending, key), Applied: applied})
 			if err != nil {
 				return nil, err
 			}
@@ -453,7 +465,7 @@ func (m *Manager) adopt(s *spec, key, path string) error {
 	if err != nil || s.empty(cur) {
 		return nil
 	}
-	if _, err := m.j.Begin(journal.Entry{Kind: Kind, Target: key, Prev: s.ownPrev(cur), Applied: cur}); err != nil {
+	if _, err := m.j.Begin(journal.Entry{Kind: Kind, Target: key, Prev: s.ownPrev(cur, nil, key), Applied: cur}); err != nil {
 		return &Error{Code: CodeIO, Target: s.name, Err: fmt.Errorf("journal: %w", err)}
 	}
 	return nil
