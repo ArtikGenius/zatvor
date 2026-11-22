@@ -1,10 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ArtikGenius/zatvor/internal/api"
+	"github.com/ArtikGenius/zatvor/internal/appdir"
 )
 
 func TestZatvordPrintsSafeMode(t *testing.T) {
@@ -21,6 +30,164 @@ func TestZatvordPrintsSafeMode(t *testing.T) {
 	if got := strings.TrimSpace(string(out)); got != "safe (build default)" {
 		t.Fatalf("output = %q, want %q", got, "safe (build default)")
 	}
+}
+
+// TestLiveRefusedWithoutAllowLive: the ADR 0004 gate. --live without
+// ZATVOR_ALLOW_LIVE=1 resolves to safe, for --print-mode and for the run.
+func TestLiveRefusedWithoutAllowLive(t *testing.T) {
+	env := func(string) string { return "" }
+	var out, errOut bytes.Buffer
+	if code := run([]string{"--live", "--print-mode"}, env, nil, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != "safe (live refused: ZATVOR_ALLOW_LIVE=1 not set)" {
+		t.Fatalf("output = %q", got)
+	}
+	if mode, _ := resolveMode([]string{"--live"}, env); modeArg(mode) != "--safe" {
+		t.Fatalf("the child of a refused --live gets %s, want --safe", modeArg(mode))
+	}
+}
+
+func TestRejectsBadDataDir(t *testing.T) {
+	foreign := t.TempDir()
+	doc := filepath.Join(foreign, "thesis.docx")
+	if err := os.WriteFile(doc, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(foreign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"relative/dir", foreign} {
+		var out, errOut bytes.Buffer
+		code := run([]string{"--data-dir", dir}, func(string) string { return "" }, nil, &out, &errOut)
+		if code != 2 || !strings.Contains(errOut.String(), "data directory") {
+			t.Errorf("--data-dir %s: exit %d, stderr %q; want 2 and a data-directory message", dir, code, errOut.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(foreign, "journal")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("a refused data dir got our subdirectories")
+	}
+	if after, _ := os.Stat(foreign); after.Mode() != before.Mode() {
+		t.Fatalf("a refused data dir changed mode %v -> %v", before.Mode(), after.Mode())
+	}
+}
+
+func TestChildArgs(t *testing.T) {
+	got := strings.Join(childArgs(appdir.Dirs{Data: "/x/zatvor"}, "--safe"), " ")
+	if got != "--supervised --data-dir /x/zatvor --safe" {
+		t.Fatalf("child args = %q", got)
+	}
+}
+
+// build compiles zatvord into a temp dir.
+func build(t *testing.T) string {
+	t.Helper()
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("go tool not found: %v", err)
+	}
+	bin := filepath.Join(t.TempDir(), "zatvord")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if out, err := exec.Command(goBin, "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// fakeUserEnv points every user directory at a temp dir, without the mode
+// switches.
+func fakeUserEnv(t *testing.T) []string {
+	t.Helper()
+	home := t.TempDir()
+	env := cleanEnv()
+	for _, k := range []string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_DATA_HOME", "XDG_CONFIG_HOME"} {
+		env = append(env, k+"="+filepath.Join(home, strings.ToLower(k)))
+	}
+	return env
+}
+
+func waitFile(t *testing.T, path string, present bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		_, err := os.Stat(path)
+		if (err == nil) == present {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for %s present=%v", path, present)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestSupervisedChildStopsOnStdinClose(t *testing.T) {
+	bin := build(t)
+	data := filepath.Join(t.TempDir(), "zatvor")
+	cmd := exec.Command(bin, "--supervised", "--data-dir", data)
+	cmd.Env = fakeUserEnv(t)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errOut bytes.Buffer
+	cmd.Stderr = &errOut
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	disc := filepath.Join(data, "run", api.DiscoveryFile)
+	waitFile(t, disc, true)
+	stdin.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("child exit: %v\n%s", err, errOut.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the child did not stop when its stdin closed")
+	}
+	if _, err := os.Stat(disc); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("api.json left behind after a clean exit")
+	}
+	if _, err := os.Stat(filepath.Join(data, "logs", "safe-mode.jsonl")); err != nil {
+		t.Fatalf("safe mode keeps its recorder log: %v", err)
+	}
+}
+
+func TestKilledSupervisorStopsChild(t *testing.T) {
+	// The supervisor starts itself with --supervised; when the supervisor
+	// is killed the child's stdin closes and it exits cleanly.
+	bin := build(t)
+	data := filepath.Join(t.TempDir(), "zatvor")
+	cmd := exec.Command(bin, "--data-dir", data)
+	cmd.Env = fakeUserEnv(t)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	disc := filepath.Join(data, "run", api.DiscoveryFile)
+	waitFile(t, disc, true)
+	d, err := api.ReadDiscovery(appdir.Dirs{Run: filepath.Join(data, "run")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.PID == cmd.Process.Pid {
+		t.Fatal("the API runs in the supervisor, want it in the --supervised child")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	waitFile(t, disc, false)
 }
 
 // cleanEnv drops the mode switches so the build default shows.

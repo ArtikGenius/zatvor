@@ -4,6 +4,7 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -264,4 +265,51 @@ func DeleteCredManKey(target string) error {
 		return fmt.Errorf("%w: delete credential: %w", ErrKey, e)
 	}
 	return nil
+}
+
+// ErrKeyConflict: both a DPAPI key file and a Credential Manager key exist
+// and they differ, so it is unknown which one the store was written with.
+var ErrKeyConflict = errors.New("store: DPAPI key file and Credential Manager key differ")
+
+// MigrateDPAPIToCredMan moves the key of DPAPIFileKey(path) to
+// CredManKey(target), once (R17): when the DPAPI file exists and no
+// credential does, the credential is written with the same key bytes and
+// read back, and only when it reads back equal is the DPAPI file deleted.
+// With no DPAPI file it does nothing. When the credential already exists
+// with the same bytes (an earlier migration stopped before the delete) the
+// file is deleted; with other bytes nothing is touched and the error is
+// ErrKeyConflict. moved reports that the DPAPI file is gone now.
+func MigrateDPAPIToCredMan(path, target string) (moved bool, err error) {
+	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("%w: %w", ErrKey, err)
+	}
+	key, err := dpapiKey{path}.read()
+	if err != nil {
+		return false, err
+	}
+	defer wipe(key)
+	name := credTarget(target)
+	have, err := credRead(name)
+	switch {
+	case errors.Is(err, windows.ERROR_NOT_FOUND):
+		if err := credWrite(name, key); err != nil {
+			return false, fmt.Errorf("%w: write credential: %w", ErrKey, err)
+		}
+		if have, err = credRead(name); err != nil {
+			return false, fmt.Errorf("%w: read credential back: %w", ErrKey, err)
+		}
+	case err != nil:
+		return false, fmt.Errorf("%w: read credential: %w", ErrKey, err)
+	}
+	same := subtle.ConstantTimeCompare(have, key) == 1
+	wipe(have)
+	if !same {
+		return false, ErrKeyConflict
+	}
+	if err := os.Remove(path); err != nil {
+		return false, fmt.Errorf("%w: remove DPAPI key file: %w", ErrKey, err)
+	}
+	return true, nil
 }
