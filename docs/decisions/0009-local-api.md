@@ -31,8 +31,9 @@ users.
 
 ## Implementation (stage 1b)
 
-- **Listener.** `127.0.0.1` only (tcp4). The persisted port (`Settings.Ports.API`) is tried first and
-  `127.0.0.1:0` is the fallback; the daemon persists the bound port. On Windows the socket has
+- **Listener.** `127.0.0.1` only (tcp4). The persisted port (`Settings.LocalAPIPort`, its own field:
+  `Settings.Ports.API` is Xray's api inbound) is tried first, unless it is 0 or equals any of Xray's
+  ports; `127.0.0.1:0` is the fallback, and the daemon persists the bound port. On Windows the socket has
   `SO_EXCLUSIVEADDRUSE`, so another socket cannot bind the port with `SO_REUSEADDR` and receive the
   clients' token.
 - **Discovery.** `Run/token` (32 random bytes, 64 lowercase hex) is written first, then `Run/api.json`

@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ func full() Settings {
 		DevTools:      true,
 		LogLevel:      "debug",
 		UpdateOnStart: true,
+		LocalAPIPort:  10805,
 	}
 }
 
@@ -39,6 +41,45 @@ func TestRoundTripEveryField(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestLoadWithoutLocalAPIPort(t *testing.T) {
+	// A version 1 file written before the field existed.
+	p := filepath.Join(t.TempDir(), "settings.json")
+	old := `{"version":1,"ports":{"Mixed":10801,"Probe":10802,"DevTools":10803,"API":10804},"activeProfile":"profile-7","devTools":true,"logLevel":"debug","updateOnStart":true}`
+	if err := os.WriteFile(p, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := full()
+	want.LocalAPIPort = 0 // none persisted
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if Defaults().LocalAPIPort != 0 {
+		t.Errorf("Defaults persist a local API port")
+	}
+}
+
+func TestLocalAPIPortJSONName(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := Save(p, full()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["localApiPort"] != 10805.0 {
+		t.Errorf("localApiPort = %v in %s, want 10805", m["localApiPort"], raw)
 	}
 }
 

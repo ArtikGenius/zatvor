@@ -406,18 +406,36 @@ func TestStopKeepsForeignDiscovery(t *testing.T) {
 	}
 }
 
-func TestPersistedPortUsedWhenFree(t *testing.T) {
+// freePort returns a loopback port that was free a moment ago.
+func freePort(t *testing.T) int {
+	t.Helper()
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func TestPersistedPortUsedWhenFree(t *testing.T) {
+	port := freePort(t)
 	f := newFake()
-	f.set.Ports.API = port
+	f.set.LocalAPIPort = port
 	e := startServer(t, f)
 	if e.addr != fmt.Sprintf("127.0.0.1:%d", port) {
 		t.Errorf("addr %s, want the persisted port %d", e.addr, port)
+	}
+}
+
+// wantFreshPort checks that e listens on 127.0.0.1 at a port other than not.
+func wantFreshPort(t *testing.T, e *env, not int) {
+	t.Helper()
+	host, p, _ := net.SplitHostPort(e.addr)
+	if host != "127.0.0.1" || p == fmt.Sprint(not) || p == "0" {
+		t.Errorf("addr %s, want 127.0.0.1 with a fresh port (not %d)", e.addr, not)
+	}
+	if code, body := e.req("GET", "/v1/status", "", nil); code != 200 {
+		t.Errorf("status %d (%s)", code, body)
 	}
 }
 
@@ -429,15 +447,32 @@ func TestPersistedPortTakenFallsBack(t *testing.T) {
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
 	f := newFake()
+	f.set.LocalAPIPort = port
+	wantFreshPort(t, startServer(t, f), port)
+}
+
+func TestPersistedPortNeverAnXrayPort(t *testing.T) {
+	for _, slot := range []string{"Mixed", "Probe", "DevTools", "API"} {
+		port := freePort(t) // free, so only the collision rule can refuse it
+		f := newFake()
+		f.set.LocalAPIPort = port
+		switch slot {
+		case "Mixed":
+			f.set.Ports.Mixed = port
+		case "Probe":
+			f.set.Ports.Probe = port
+		case "DevTools":
+			f.set.Ports.DevTools = port
+		case "API":
+			f.set.Ports.API = port
+		}
+		t.Run(slot, func(t *testing.T) { wantFreshPort(t, startServer(t, f), port) })
+	}
+	// Xray's api inbound port alone is never taken as ours.
+	port := freePort(t)
+	f := newFake()
 	f.set.Ports.API = port
-	e := startServer(t, f)
-	host, p, _ := net.SplitHostPort(e.addr)
-	if host != "127.0.0.1" || p == fmt.Sprint(port) || p == "0" {
-		t.Errorf("addr %s, want 127.0.0.1 with a fresh port", e.addr)
-	}
-	if code, body := e.req("GET", "/v1/status", "", nil); code != 200 {
-		t.Errorf("status %d (%s)", code, body)
-	}
+	wantFreshPort(t, startServer(t, f), port)
 }
 
 // sseReader reads named events from an event stream.
@@ -687,7 +722,7 @@ func TestRoutesReachBackend(t *testing.T) {
 	check("DELETE", "/v1/subscriptions/s8", "", `{"ok":true}`)
 	check("POST", "/v1/devtools", `{"on":true}`, `{"targets":[{"name":"claude","path":"/x/settings.json","state":"on"}]}`)
 	check("PUT", "/v1/settings", `{"version":1,"ports":{"Mixed":1,"Probe":2,"DevTools":3,"API":4},"logLevel":"info"}`,
-		`{"version":1,"ports":{"Mixed":1,"Probe":2,"DevTools":3,"API":4},"activeProfile":"","devTools":false,"logLevel":"info","updateOnStart":false}`)
+		`{"version":1,"ports":{"Mixed":1,"Probe":2,"DevTools":3,"API":4},"activeProfile":"","devTools":false,"logLevel":"info","updateOnStart":false,"localApiPort":0}`)
 	check("POST", "/v1/show", "", `{"ok":true}`)
 	if f.connected != "p1" || f.updated != "s7" || f.removed != "s8" || f.devtools == nil || !*f.devtools ||
 		f.force == nil || *f.force || f.shows != 1 || f.set.LogLevel != "info" {

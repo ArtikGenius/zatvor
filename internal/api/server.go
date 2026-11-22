@@ -66,8 +66,8 @@ type Backend interface {
 	// UpdateSubscription is the user's update button.
 	UpdateSubscription(ctx context.Context, id string) (profile.Diff, error)
 	RemoveSubscription(id string) error
-	// Settings are the current settings; Ports.API is the port Start tries
-	// first.
+	// Settings are the current settings; LocalAPIPort is the port Start
+	// tries first.
 	Settings() settings.Settings
 	// PutSettings saves s and returns what was saved.
 	PutSettings(s settings.Settings) (settings.Settings, error)
@@ -113,8 +113,9 @@ func opContext(r *http.Request) context.Context {
 	return r.Context()
 }
 
-// Start listens on 127.0.0.1 at the persisted port (Settings().Ports.API)
-// when it can be bound, else on a free port, then writes the token file and
+// Start listens on 127.0.0.1 at the persisted port (Settings().LocalAPIPort)
+// when it is set, is none of Xray's ports (Settings().Ports) and can be
+// bound, else on a free port, then writes the token file and
 // after it the discovery file, so that a reader that finds api.json always
 // finds the token. It returns the bound "127.0.0.1:<port>"; persisting a new
 // port is the caller's job. ctx bounds only the start itself; Stop ends the
@@ -129,7 +130,7 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ln, err := listen(ctx, s.b.Settings().Ports.API)
+	ln, err := listen(ctx, preferredPort(s.b.Settings()))
 	if err != nil {
 		return "", fmt.Errorf("api: listen: %w", err)
 	}
@@ -240,10 +241,25 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// preferredPort is the persisted local API port, or 0 when it is unset, out
+// of range, or one of Xray's ports (which Xray must be able to bind).
+func preferredPort(st settings.Settings) int {
+	p := st.LocalAPIPort
+	if p < 1 || p > 65535 {
+		return 0
+	}
+	for _, x := range []int{st.Ports.Mixed, st.Ports.Probe, st.Ports.DevTools, st.Ports.API} {
+		if p == x {
+			return 0
+		}
+	}
+	return p
+}
+
 // listen binds 127.0.0.1:port, or 127.0.0.1:0 when port is unset or taken.
 func listen(ctx context.Context, port int) (net.Listener, error) {
 	lc := net.ListenConfig{Control: listenControl}
-	if port > 0 && port <= 65535 {
+	if port != 0 {
 		if ln, err := lc.Listen(ctx, "tcp4", fmt.Sprintf("127.0.0.1:%d", port)); err == nil {
 			return ln, nil
 		}

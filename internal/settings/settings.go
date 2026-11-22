@@ -21,12 +21,17 @@ const CurrentVersion = 1
 
 // Settings are the persisted daemon settings.
 type Settings struct {
-	Version       int       `json:"version"`
+	Version int `json:"version"`
+	// Ports are Xray's listeners; Ports.API is Xray's api inbound.
 	Ports         gen.Ports `json:"ports"`
 	ActiveProfile string    `json:"activeProfile"`
 	DevTools      bool      `json:"devTools"`
 	LogLevel      string    `json:"logLevel"`
 	UpdateOnStart bool      `json:"updateOnStart"`
+	// LocalAPIPort is the port of zatvord's own local HTTP API (ADR 0009),
+	// separate from every Xray port. 0, also a file without the field, means
+	// none persisted.
+	LocalAPIPort int `json:"localApiPort"`
 }
 
 // Errors for errors.Is. Messages never hold file contents.
