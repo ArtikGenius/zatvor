@@ -1,0 +1,2 @@
+trojan://REPLACE_ME_password@trojan.example.com:443?security=tls&sni=trojan.example.com&type=ws&path=%2Ftr&host=trojan.example.com#trojan%20ws	{"Scheme":"trojan","Remark":"trojan ws","Address":"trojan.example.com","Port":443,"Params":{"password":"REPLACE_ME_password","security":"tls","sni":"trojan.example.com","type":"ws","path":"/tr","host":"trojan.example.com"}}
+trojan://p%40ss%3Aword@trojan.example.com:443#t	{"Scheme":"trojan","Remark":"t","Address":"trojan.example.com","Port":443,"Params":{"password":"p@ss:word"}}

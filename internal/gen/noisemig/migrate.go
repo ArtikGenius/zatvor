@@ -25,6 +25,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/ArtikGenius/zatvor/internal/ojson"
 )
 
 // Reasons a migration is refused. When any outbound is refused the whole
@@ -53,7 +55,7 @@ type Report struct {
 
 // candidate is an outbound X dialing through a freedom outbound D with noises.
 type candidate struct {
-	x, d   *object
+	x, d   *ojson.Object
 	xTag   string
 	dTag   string
 	noises []any
@@ -62,19 +64,19 @@ type candidate struct {
 // Migrate returns the translated config. When there is nothing to change, a
 // migration is refused, or an error occurs, it returns cfg itself unchanged.
 func Migrate(cfg []byte) ([]byte, Report, error) {
-	root, err := parseOrdered(cfg)
+	root, err := ojson.Parse(cfg)
 	if err != nil {
 		return cfg, Report{}, fmt.Errorf("noisemig: %w", err)
 	}
-	rootObj, ok := root.(*object)
+	rootObj, ok := root.(*ojson.Object)
 	if !ok {
 		return cfg, Report{}, nil
 	}
 	outbounds := arrayAt(rootObj, "outbounds")
 
-	byTag := map[string]*object{}
+	byTag := map[string]*ojson.Object{}
 	for _, ob := range outbounds {
-		if o, ok := ob.(*object); ok {
+		if o, ok := ob.(*ojson.Object); ok {
 			if tag, ok := stringAt(o, "tag"); ok {
 				byTag[tag] = o
 			}
@@ -83,7 +85,7 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 
 	var cands []candidate
 	for _, ob := range outbounds {
-		x, ok := ob.(*object)
+		x, ok := ob.(*ojson.Object)
 		if !ok {
 			continue
 		}
@@ -107,7 +109,7 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 	}
 
 	// The dialerProxy fields about to be removed do not count as references.
-	migrating := map[*object]bool{}
+	migrating := map[*ojson.Object]bool{}
 	for _, c := range cands {
 		migrating[objectAt(c.x, "streamSettings", "sockopt")] = true
 	}
@@ -135,14 +137,14 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 
 	changed := false
 	var freedoms []candidate // distinct D, in outbound order
-	seen := map[*object]bool{}
+	seen := map[*ojson.Object]bool{}
 	for i, c := range cands {
 		appendNoise(c.x, translated[i])
 		ss := objectAt(c.x, "streamSettings")
 		sockopt := objectAt(ss, "sockopt")
-		sockopt.del("dialerProxy")
-		if len(sockopt.members) == 0 {
-			ss.del("sockopt")
+		sockopt.Delete("dialerProxy")
+		if sockopt.Len() == 0 {
+			ss.Delete("sockopt")
 		}
 		if !seen[c.d] {
 			seen[c.d] = true
@@ -159,7 +161,7 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 	// Drop empty "noises": [] from the remaining freedom outbounds; each one
 	// triggers Xray's deprecation warning.
 	for _, ob := range arrayAt(rootObj, "outbounds") {
-		o, ok := ob.(*object)
+		o, ok := ob.(*ojson.Object)
 		if !ok {
 			continue
 		}
@@ -167,9 +169,9 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 			continue
 		}
 		settings := objectAt(o, "settings")
-		if v, ok := settings.get("noises"); ok {
+		if v, ok := settings.Get("noises"); ok {
 			if arr, ok := v.([]any); ok && len(arr) == 0 {
-				settings.del("noises")
+				settings.Delete("noises")
 				changed = true
 			}
 		}
@@ -178,7 +180,7 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 	if !changed {
 		return cfg, Report{}, nil
 	}
-	out, err := encodeOrdered(rootObj)
+	out, err := ojson.Marshal(rootObj)
 	if err != nil {
 		return cfg, Report{}, fmt.Errorf("noisemig: %w", err)
 	}
@@ -189,23 +191,23 @@ func Migrate(cfg []byte) ([]byte, Report, error) {
 // mechanically, or "".
 func refusal(c candidate) string {
 	for _, m := range arrayAt(c.x, "streamSettings", "finalmask", "udp") {
-		if o, ok := m.(*object); ok {
+		if o, ok := m.(*ojson.Object); ok {
 			if t, _ := stringAt(o, "type"); strings.EqualFold(t, "noise") {
 				return ReasonNoiseInFinalmask
 			}
 		}
 	}
-	if dp, ok := c.d.get("streamSettings"); ok {
+	if dp, ok := c.d.Get("streamSettings"); ok {
 		if v, ok := stringAt(asObject(dp), "sockopt", "dialerProxy"); ok && v != "" {
 			return ReasonChainedDialer
 		}
 	}
-	if p, ok := c.d.get("proxySettings"); ok && !isEmpty(p) {
+	if p, ok := c.d.Get("proxySettings"); ok && !isEmpty(p) {
 		return ReasonChainedDialer
 	}
 	for _, n := range c.noises {
-		if o, ok := n.(*object); ok {
-			if v, ok := o.get("applyTo"); ok && !isEmpty(v) {
+		if o, ok := n.(*ojson.Object); ok {
+			if v, ok := o.Get("applyTo"); ok && !isEmpty(v) {
 				return ReasonApplyTo
 			}
 		}
@@ -215,17 +217,19 @@ func refusal(c candidate) string {
 			return ReasonRedirect53
 		}
 	}
-	for _, m := range c.d.members {
-		switch m.key {
+	for i := 0; i < c.d.Len(); i++ {
+		key, val := c.d.At(i)
+		switch key {
 		case "tag", "protocol":
 		case "settings":
-			for _, s := range asObject(m.val).members {
-				if s.key != "noises" && !isEmpty(s.val) {
+			so := asObject(val)
+			for j := 0; j < so.Len(); j++ {
+				if k, v := so.At(j); k != "noises" && !isEmpty(v) {
 					return ReasonFreedomHasOtherSettings
 				}
 			}
 		default:
-			if !isEmpty(m.val) {
+			if !isEmpty(val) {
 				return ReasonFreedomHasOtherSettings
 			}
 		}
@@ -237,15 +241,15 @@ func refusal(c candidate) string {
 func translateNoises(noises []any) ([]any, error) {
 	out := make([]any, 0, len(noises))
 	for i, n := range noises {
-		o, ok := n.(*object)
+		o, ok := n.(*ojson.Object)
 		if !ok {
 			return nil, fmt.Errorf("noise %d is not an object", i)
 		}
-		for _, m := range o.members {
-			switch m.key {
+		for j := 0; j < o.Len(); j++ {
+			switch key, _ := o.At(j); key {
 			case "type", "packet", "delay", "applyTo":
 			default:
-				return nil, fmt.Errorf("noise %d: unknown field %q", i, m.key)
+				return nil, fmt.Errorf("noise %d: unknown field %q", i, key)
 			}
 		}
 		typ, _ := stringAt(o, "type")
@@ -253,7 +257,7 @@ func translateNoises(noises []any) ([]any, error) {
 		if !ok || packet == "" {
 			return nil, fmt.Errorf("noise %d: packet must be a non-empty string", i)
 		}
-		item := &object{}
+		item := &ojson.Object{}
 		switch typ {
 		case "hex":
 			p := strings.Map(func(r rune) rune {
@@ -268,11 +272,11 @@ func translateNoises(noises []any) ([]any, error) {
 			if _, err := hex.DecodeString(p); err != nil {
 				return nil, fmt.Errorf("noise %d: bad hex packet: %w", i, err)
 			}
-			item.set("type", "hex")
-			item.set("packet", p)
+			item.Set("type", "hex")
+			item.Set("packet", p)
 		case "str":
-			item.set("type", "str")
-			item.set("packet", packet)
+			item.Set("type", "str")
+			item.Set("packet", packet)
 		case "base64":
 			// Legacy accepts URL-safe and unpadded input; finalmask wants std padded.
 			p := strings.TrimRight(strings.NewReplacer("-", "+", "_", "/").Replace(strings.TrimSpace(packet)), "=")
@@ -283,18 +287,18 @@ func translateNoises(noises []any) ([]any, error) {
 			if len(raw) == 0 {
 				return nil, fmt.Errorf("noise %d: base64 packet decodes to nothing", i)
 			}
-			item.set("type", "base64")
-			item.set("packet", base64.StdEncoding.EncodeToString(raw))
+			item.Set("type", "base64")
+			item.Set("packet", base64.StdEncoding.EncodeToString(raw))
 		case "rand":
 			if !randShape.MatchString(packet) {
 				return nil, fmt.Errorf("noise %d: rand packet %q is not \"n\" or \"a-b\"", i, packet)
 			}
-			item.set("rand", packet)
+			item.Set("rand", packet)
 		default:
 			return nil, fmt.Errorf("noise %d: unknown type %q", i, typ)
 		}
-		if d, ok := o.get("delay"); ok {
-			item.set("delay", d)
+		if d, ok := o.Get("delay"); ok {
+			item.Set("delay", d)
 		}
 		out = append(out, item)
 	}
@@ -303,30 +307,31 @@ func translateNoises(noises []any) ([]any, error) {
 
 // appendNoise adds the noise mask as the last finalmask.udp item (nearest the
 // wire), creating streamSettings.finalmask.udp when missing.
-func appendNoise(x *object, items []any) {
+func appendNoise(x *ojson.Object, items []any) {
 	ss := ensureObject(x, "streamSettings")
 	fm := ensureObject(ss, "finalmask")
-	udp, _ := fm.get("udp")
+	udp, _ := fm.Get("udp")
 	arr, _ := udp.([]any)
-	settings := &object{}
-	settings.set("reset", json.Number("0"))
-	settings.set("noise", items)
-	mask := &object{}
-	mask.set("type", "noise")
-	mask.set("settings", settings)
-	fm.set("udp", append(arr, mask))
+	settings := &ojson.Object{}
+	settings.Set("reset", json.Number("0"))
+	settings.Set("noise", items)
+	mask := &ojson.Object{}
+	mask.Set("type", "noise")
+	mask.Set("settings", settings)
+	fm.Set("udp", append(arr, mask))
 }
 
 // referenced reports whether anything but d's own "tag" and the dialerProxy
 // of the sockopt objects in skip names tag. Routing balancer and observatory
 // selectors match by prefix.
-func referenced(root, d *object, tag string, skip map[*object]bool) bool {
-	var walk func(v any, key string, owner *object) bool
-	walk = func(v any, key string, owner *object) bool {
+func referenced(root, d *ojson.Object, tag string, skip map[*ojson.Object]bool) bool {
+	var walk func(v any, key string, owner *ojson.Object) bool
+	walk = func(v any, key string, owner *ojson.Object) bool {
 		switch t := v.(type) {
-		case *object:
-			for _, m := range t.members {
-				if walk(m.val, m.key, t) {
+		case *ojson.Object:
+			for i := 0; i < t.Len(); i++ {
+				k, v := t.At(i)
+				if walk(v, k, t) {
 					return true
 				}
 			}
@@ -352,15 +357,15 @@ func referenced(root, d *object, tag string, skip map[*object]bool) bool {
 	return walk(root, "", nil)
 }
 
-func removeOutbound(root, d *object) {
+func removeOutbound(root, d *ojson.Object) {
 	obs := arrayAt(root, "outbounds")
 	kept := make([]any, 0, len(obs))
 	for _, ob := range obs {
-		if o, ok := ob.(*object); !ok || o != d {
+		if o, ok := ob.(*ojson.Object); !ok || o != d {
 			kept = append(kept, ob)
 		}
 	}
-	root.set("outbounds", kept)
+	root.Set("outbounds", kept)
 }
 
 func isEmpty(v any) bool {
@@ -369,50 +374,50 @@ func isEmpty(v any) bool {
 		return true
 	case string:
 		return t == ""
-	case *object:
-		return len(t.members) == 0
+	case *ojson.Object:
+		return t.Len() == 0
 	case []any:
 		return len(t) == 0
 	}
 	return false
 }
 
-func asObject(v any) *object {
-	if o, ok := v.(*object); ok {
+func asObject(v any) *ojson.Object {
+	if o, ok := v.(*ojson.Object); ok {
 		return o
 	}
-	return &object{}
+	return &ojson.Object{}
 }
 
 // objectAt follows keys through nested objects; a missing step yields an
 // empty, detached object.
-func objectAt(o *object, keys ...string) *object {
+func objectAt(o *ojson.Object, keys ...string) *ojson.Object {
 	for _, k := range keys {
-		v, _ := o.get(k)
+		v, _ := o.Get(k)
 		o = asObject(v)
 	}
 	return o
 }
 
-func ensureObject(o *object, key string) *object {
-	if v, ok := o.get(key); ok {
-		if c, ok := v.(*object); ok {
+func ensureObject(o *ojson.Object, key string) *ojson.Object {
+	if v, ok := o.Get(key); ok {
+		if c, ok := v.(*ojson.Object); ok {
 			return c
 		}
 	}
-	c := &object{}
-	o.set(key, c)
+	c := &ojson.Object{}
+	o.Set(key, c)
 	return c
 }
 
-func arrayAt(o *object, keys ...string) []any {
-	v, _ := objectAt(o, keys[:len(keys)-1]...).get(keys[len(keys)-1])
+func arrayAt(o *ojson.Object, keys ...string) []any {
+	v, _ := objectAt(o, keys[:len(keys)-1]...).Get(keys[len(keys)-1])
 	arr, _ := v.([]any)
 	return arr
 }
 
-func stringAt(o *object, keys ...string) (string, bool) {
-	v, _ := objectAt(o, keys[:len(keys)-1]...).get(keys[len(keys)-1])
+func stringAt(o *ojson.Object, keys ...string) (string, bool) {
+	v, _ := objectAt(o, keys[:len(keys)-1]...).Get(keys[len(keys)-1])
 	s, ok := v.(string)
 	return s, ok
 }

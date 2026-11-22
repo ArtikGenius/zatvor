@@ -1,4 +1,4 @@
-package noisemig
+package ojson
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 	"io"
 )
 
-// A parsed JSON value is one of: *object, []any, string, json.Number, bool, nil.
+// A parsed JSON value is one of: *Object, []any, string, json.Number, bool, nil.
 
 // member is one key/value pair of an object, in source order.
 type member struct {
@@ -16,12 +16,12 @@ type member struct {
 	val any
 }
 
-// object is a JSON object that keeps its keys in source order.
-type object struct {
+// Object is a JSON object that keeps its keys in source order.
+type Object struct {
 	members []member
 }
 
-func (o *object) index(key string) int {
+func (o *Object) index(key string) int {
 	for i := len(o.members) - 1; i >= 0; i-- { // last wins, as in encoding/json
 		if o.members[i].key == key {
 			return i
@@ -30,15 +30,15 @@ func (o *object) index(key string) int {
 	return -1
 }
 
-func (o *object) get(key string) (any, bool) {
+func (o *Object) Get(key string) (any, bool) {
 	if i := o.index(key); i >= 0 {
 		return o.members[i].val, true
 	}
 	return nil, false
 }
 
-// set replaces the value in place, or appends the key at the end.
-func (o *object) set(key string, val any) {
+// Set replaces the value in place, or appends the key at the end.
+func (o *Object) Set(key string, val any) {
 	if i := o.index(key); i >= 0 {
 		o.members[i].val = val
 		return
@@ -46,8 +46,8 @@ func (o *object) set(key string, val any) {
 	o.members = append(o.members, member{key, val})
 }
 
-// del removes every occurrence of key.
-func (o *object) del(key string) {
+// Delete removes every occurrence of key.
+func (o *Object) Delete(key string) {
 	kept := o.members[:0]
 	for _, m := range o.members {
 		if m.key != key {
@@ -57,7 +57,7 @@ func (o *object) del(key string) {
 	o.members = kept
 }
 
-func parseOrdered(data []byte) (any, error) {
+func Parse(data []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	v, err := decodeValue(dec)
@@ -82,7 +82,7 @@ func decodeValue(dec *json.Decoder) (any, error) {
 	case json.Delim:
 		switch t {
 		case '{':
-			o := &object{}
+			o := &Object{}
 			for dec.More() {
 				kt, err := dec.Token()
 				if err != nil {
@@ -122,9 +122,9 @@ func decodeValue(dec *json.Decoder) (any, error) {
 	}
 }
 
-// encodeOrdered writes v with two-space indentation (the layout of
+// Marshal writes v with two-space indentation (the layout of
 // json.MarshalIndent), no HTML escaping, and a trailing newline.
-func encodeOrdered(v any) ([]byte, error) {
+func Marshal(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := encodeValue(&buf, v, 0); err != nil {
 		return nil, err
@@ -153,7 +153,7 @@ func encodeString(buf *bytes.Buffer, s string) error {
 
 func encodeValue(buf *bytes.Buffer, v any, depth int) error {
 	switch t := v.(type) {
-	case *object:
+	case *Object:
 		if len(t.members) == 0 {
 			buf.WriteString("{}")
 			return nil
@@ -210,3 +210,22 @@ func encodeValue(buf *bytes.Buffer, v any, depth int) error {
 	}
 	return nil
 }
+
+// Keys returns the keys in source order, without duplicates.
+func (o *Object) Keys() []string {
+	keys := make([]string, 0, len(o.members))
+	seen := map[string]bool{}
+	for _, m := range o.members {
+		if !seen[m.key] {
+			seen[m.key] = true
+			keys = append(keys, m.key)
+		}
+	}
+	return keys
+}
+
+// Len returns the number of members, counting duplicate keys.
+func (o *Object) Len() int { return len(o.members) }
+
+// At returns the i-th member in source order, 0 <= i < Len.
+func (o *Object) At(i int) (string, any) { return o.members[i].key, o.members[i].val }
