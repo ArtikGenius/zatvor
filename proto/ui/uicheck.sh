@@ -39,6 +39,7 @@ fi
 wait $opener || true
 cp "$log" "results/$fw-macos-ui.log" || true
 res="work/ui-$app/Contents/MacOS/ui-check.json"
+echo "--- $log"; cat "$log" || true; echo "---"
 if [ ! -s "$res" ]; then
 	echo "no ui-check.json" >&2
 	cat "$log" >&2 || true

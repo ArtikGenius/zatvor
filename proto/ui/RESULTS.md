@@ -96,24 +96,39 @@ Reading the numbers:
 
 ## Checklist for Artur's Mac
 
-Download `ZatvorProtoTauri-macos-universal.zip` (artifact `proto-ui-tauri-macos-universal`) and
-`ZatvorProtoWails-macos-universal.zip` (artifact `proto-ui-wails-macos-universal`) from run 44929300703.
-Unzip both, move them to /Applications, and for each app:
+### First round (run 44929300703), 2026-11-21
 
-1. **Open from the menu bar:** start the app; an iris appears in the menu bar and there is no Dock icon.
-   Click it: the popup opens. Click it again, or click elsewhere: the popup closes. Note whether the first
-   open feels slow.
-2. **Placement under the notch:** is the popup directly under the icon, inside the screen, and not hidden
-   by the notch? Try once with the icon near the notch (move it with ⌘-drag).
-3. **Dark/light:** switch System Settings → Appearance between Light and Dark with the popup open, then
-   reopen it. The colours should follow without a restart.
-4. **Gatekeeper prompt:** copy the exact text of the first-launch dialog, and say whether
-   System Settings → Privacy & Security → "Open Anyway" was needed. The builds are ad-hoc signed and not
-   notarized.
-5. **metrics.json:** run `/Applications/ZatvorProtoTauri.app/Contents/MacOS/zatvor-proto-tauri --self-test`
-   (and the same for `ZatvorProtoWails.app/Contents/MacOS/zatvor-proto-wails`). Wait about 90 s without
-   touching anything, then send `/Applications/<App>.app/Contents/MacOS/metrics.json`. If that folder was
-   not writable, the file is `~/zatvor-proto-<tauri|wails>-metrics.json`.
+Artur ran both builds on his MacBook (arm64, notch). Self-test numbers: Tauri openMs 23.8 (first 21.1),
+footprint 20.8 MB hidden; Wails openMs 29 (first 22), footprint 26.3 MB. By hand:
+
+- Tauri: "starts, but nothing is visible". Cause found in code: the popup was placed through
+  `monitor_from_point`, which on macOS takes points while the tray rect is in physical pixels. On a Retina
+  screen the lookup failed for any icon right of the screen's middle, so the popup was never moved next to
+  the icon. Placement is now a pure function over physical monitor bounds (`popup_position`, unit-tested
+  with Retina numbers). Whether the icon itself was hidden by the notch is not known; the new log answers it.
+- Wails: icon and popup appeared, "buttons are not clickable". The popup was a static copy of the mockup,
+  so clicks had no visible effect. Every control now gives feedback (mock only, nothing connects).
+- Light/dark was not checked: the checklist sent him to System Settings. The popup's "..." menu now forces
+  light or dark.
+
+Changes for the second round: both apps open the popup once at start (visible even if the notch hides the
+icon) and log every step to `~/Library/Logs/ZatvorProto/<tauri|wails>.log`. CI (macOS runner) now runs
+`uicheck.sh`: `--ui-check` opens the popup through the click path, checks it is on screen and clicks every
+control from the page; then a normal start must open the popup. Screenshots go to the metrics artifact.
+
+### Second round
+
+Download `proto-ui-tauri-macos-universal` and `proto-ui-wails-macos-universal` from the latest green
+proto-ui run on `stage-0c`, unzip (the inner zip too), replace the apps in /Applications, and for each app:
+
+1. **Start:** the popup opens by itself near the top right within about 2 s. Is an iris icon in the menu
+   bar? If not, the notch is hiding it (note that).
+2. **Clicks:** the switch turns protection off and on, "Пауза" becomes "Продолжить", "Проверить" and
+   "Панель" show a short message. Everything is a mock.
+3. **Theme:** "..." (top right) → Светлая / Тёмная / Как в системе. Colours change at once.
+4. **Tray:** click the icon: the popup closes; click again: it opens under the icon. Click elsewhere: it
+   closes. Right click on the icon: menu with "Выход".
+5. **Log:** send `~/Library/Logs/ZatvorProto/tauri.log` and `wails.log` (Finder → Go → Go to Folder).
 
 ## Limits
 

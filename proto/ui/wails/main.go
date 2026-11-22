@@ -136,6 +136,10 @@ func assets(painted chan<- paintReport) http.Handler {
 	files := application.BundledAssetFileServer(shared.FS)
 	page := strings.Replace(string(mustRead("popup.html")), "</head>",
 		`<script type="module" src="/wails/runtime.js"></script>`+"\n</head>", 1)
+	// popup.js inline: the page's own script must not depend on how the
+	// bundled file server serves .js files.
+	page = strings.Replace(page, `<script src="popup.js" defer></script>`,
+		"<script>document.addEventListener('DOMContentLoaded',function(){\n"+string(mustRead("popup.js"))+"\n});</script>", 1)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/", "/index.html", "/popup.html":
