@@ -72,6 +72,11 @@ var logLevels = map[string]bool{"debug": true, "info": true, "warning": true, "e
 // inboundTag value is rewritten to "mixed-in" and a warning is reported;
 // rules are never dropped.
 //
+// ProxyTag for a full JSON is the target (outboundTag or balancerTag) of the
+// first catch-all rule, else the first outbound (Xray's default). A catch-all
+// is a rule with a target whose only other keys are type, ruleTag and
+// network "tcp,udp"; any other condition makes it not a catch-all.
+//
 // A zero Source.Kind means SourceProvider. For a full JSON, Source.Happ is
 // ignored under SourceProvider (the JSON's own routing is kept).
 func Build(in Input) ([]byte, Report, error) {
@@ -409,13 +414,14 @@ func ensureOutbound(outs []any, want, protocol string, mk func(string) *ojson.Ob
 	return tag, append(outs, mk(tag))
 }
 
-// providerTarget is the outbound or balancer the provider's last catch-all
-// rule points at, else the first outbound.
+// providerTarget is the outbound or balancer the provider's first catch-all
+// rule points at (it shadows later ones), else Xray's default, the first
+// outbound.
 func providerTarget(routing *ojson.Object, outs []any) (target, error) {
 	if routing != nil {
 		if v, ok := routing.Get("rules"); ok {
 			rules, _ := v.([]any)
-			for i := len(rules) - 1; i >= 0; i-- {
+			for i := 0; i < len(rules); i++ {
 				r, ok := rules[i].(*ojson.Object)
 				if !ok || !isCatchAll(r) {
 					continue

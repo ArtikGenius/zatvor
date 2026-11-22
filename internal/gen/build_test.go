@@ -334,8 +334,19 @@ func TestRuleLayersSourceFirstOutboundIsProbeTarget(t *testing.T) {
 	}
 }
 
+func TestProxyTagFirstCatchAllWins(t *testing.T) {
+	cfg := `{"outbounds":[{"tag":"a","protocol":"freedom"},{"tag":"b","protocol":"freedom"},{"tag":"c","protocol":"freedom"}],
+	"routing":{"rules":[{"type":"field","domain":["x"],"outboundTag":"c"},
+	{"type":"field","network":"tcp,udp","outboundTag":"b"},
+	{"type":"field","network":"tcp,udp","outboundTag":"c"}]}}`
+	out, rep := mustBuild(t, baseInput(profile.Profile{Config: parseObj(t, []byte(cfg))}))
+	if rep.ProxyTag != "b" || dig(ruleList(t, out)[1], "outboundTag") != "b" {
+		t.Fatalf("proxy tag = %q", rep.ProxyTag)
+	}
+}
+
 func TestProxyTagFallsBackToFirstOutbound(t *testing.T) {
-	cfg := `{"outbounds":[{"tag":"first","protocol":"freedom"}],"routing":{"rules":[{"type":"field","domain":["x"],"outboundTag":"first"}]}}`
+	cfg := `{"outbounds":[{"tag":"first","protocol":"freedom"}],"routing":{"rules":[{"type":"field","domain":["x"],"outboundTag":"other"}]}}`
 	_, rep := mustBuild(t, baseInput(profile.Profile{Config: parseObj(t, []byte(cfg))}))
 	if rep.ProxyTag != "first" {
 		t.Fatalf("proxy tag = %q", rep.ProxyTag)
