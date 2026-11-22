@@ -35,10 +35,11 @@ const fallbackWorkers = 4
 // of url takes via each outbound. One temporary Xray runs with a socks
 // inbound on 127.0.0.1 (random per-run credentials) per outbound, routed to
 // that outbound only. RTT is the time until the response headers arrive; any
-// HTTP status counts as reachable. If that shared Xray cannot start (for
-// instance because one outbound is invalid), each outbound is measured with
-// its own temporary Xray (at most four at a time), so only the outbounds
-// that fail on their own carry an error. Every temporary Xray is stopped on
+// HTTP status counts as reachable. If that shared Xray fails for a config
+// reason (one outbound is invalid, so Xray exits at start), each outbound is
+// measured with its own temporary Xray (at most four at a time), so only the
+// outbounds that fail on their own carry an error. Other start failures (no
+// binary, a cancelled ctx, a ready timeout) are given to every outbound. Every temporary Xray is stopped on
 // every path.
 func Latency(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.Object, url string, timeout time.Duration) []LatencyResult {
 	res := make([]LatencyResult, len(outbounds))
@@ -52,7 +53,7 @@ func Latency(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 		url = DefaultLatencyURL
 	}
 	m, err := measure(ctx, xrayPath, assetDir, outbounds, url, timeout)
-	if err == nil || len(outbounds) == 1 {
+	if err == nil || len(outbounds) == 1 || !configFailure(ctx, err) {
 		for i := range res {
 			if err != nil {
 				res[i].Err = err
@@ -82,6 +83,21 @@ func Latency(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 	return res
 }
 
+// errLatencyConfig marks a temporary config that could not be built.
+var errLatencyConfig = errors.New("xrayrun: latency config")
+
+// configFailure reports whether a failed shared run points at the config,
+// so that measuring each outbound alone can help: the config could not be
+// built, or Xray exited before it was ready (it rejects a bad outbound at
+// start). A missing binary, a busy port, a ready timeout or a cancelled ctx
+// would fail every single run the same way.
+func configFailure(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	return errors.Is(err, errLatencyConfig) || errors.Is(err, ErrExited)
+}
+
 // measure runs one temporary Xray for outbounds and probes each of them.
 // The error is set when that Xray could not be set up or started; the
 // per-outbound results are valid only without it.
@@ -93,7 +109,7 @@ func measure(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 	user, pass := randHex(12), randHex(16)
 	cfg, err := latencyConfig(outbounds, ports, user, pass)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errLatencyConfig, err)
 	}
 
 	r := New(xrayPath, assetDir, nil)

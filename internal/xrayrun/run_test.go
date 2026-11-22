@@ -34,6 +34,14 @@ func fakeXray() int {
 	modeB, _ := os.ReadFile(filepath.Join(dir, "mode"))
 	mode := strings.TrimSpace(string(modeB))
 	in, _ := io.ReadAll(os.Stdin)
+	if m, ok := strings.CutSuffix(mode, "count"); ok { // count invocations
+		mode = m
+		f, err := os.OpenFile(filepath.Join(dir, "runs"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err == nil {
+			f.WriteString("run\n")
+			f.Close()
+		}
+	}
 	switch mode {
 	case "echo":
 		_ = os.WriteFile(filepath.Join(dir, "stdin.out"), in, 0o600)
