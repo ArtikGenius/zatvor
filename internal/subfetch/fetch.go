@@ -171,6 +171,9 @@ func (f *Fetcher) do(ctx context.Context, req Request, host string) (*raw, error
 			if len(via) > maxRedirects {
 				return &redirectError{fmt.Sprintf("more than %d redirects from %s", maxRedirects, host)}
 			}
+			// Go fills Referer with the previous URL, whose path or query
+			// may hold the subscription token. We never need it.
+			next.Header.Del("Referer")
 			prev := via[len(via)-1]
 			if prev.URL.Scheme == "https" && next.URL.Scheme != "https" {
 				return &redirectError{fmt.Sprintf("redirect from %s to %s downgrades https to http", prev.URL.Host, next.URL.Host)}

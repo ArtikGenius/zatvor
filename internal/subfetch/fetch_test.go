@@ -341,3 +341,30 @@ func TestUAHelpers(t *testing.T) {
 		t.Fatal("HappUA")
 	}
 }
+
+// Go sets Referer to the previous URL (path and query, i.e. the token)
+// before CheckRedirect; no hop may carry it.
+func TestRedirectSendsNoReferer(t *testing.T) {
+	var cdnRef, sameRef []string
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cdnRef = r.Header.Values("Referer")
+		_, _ = w.Write([]byte(linkBody))
+	}))
+	defer cdn.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sub/TOKEN" {
+			http.Redirect(w, r, "/hop?t=TOKEN", http.StatusFound)
+			return
+		}
+		sameRef = r.Header.Values("Referer")
+		http.Redirect(w, r, strings.Replace(cdn.URL, "127.0.0.1", "localhost", 1)+"/x", http.StatusFound)
+	}))
+	defer srv.Close()
+	res, err := New(5*time.Second).Fetch(context.Background(), Request{URL: srv.URL + "/sub/TOKEN?k=TOKEN", UA: "ua"})
+	if err != nil || res.Problem != None {
+		t.Fatalf("err=%v problem=%v", err, res.Problem)
+	}
+	if len(sameRef) != 0 || len(cdnRef) != 0 {
+		t.Fatalf("Referer sent: same-host=%q cross-host=%q", sameRef, cdnRef)
+	}
+}
