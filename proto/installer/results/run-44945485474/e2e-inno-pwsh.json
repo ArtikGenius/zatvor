@@ -1,0 +1,94 @@
+{
+  "installer": "zatvor-setup-0.0.1.exe",
+  "shell": "pwsh.exe",
+  "cases": {
+    "refuses without CI=true": {
+      "exitCode": 2,
+      "seconds": 0.48,
+      "output": "install.ps1: stage 0c prototype: runs only on CI runners (CI=true); it would change this system",
+      "installedAfter": false,
+      "want": "exit 2, installed=False",
+      "pass": true
+    },
+    "committed placeholder key": {
+      "exitCode": 1,
+      "seconds": 0.89,
+      "output": "install.ps1: SHA256SUMS signature is NOT valid for the Zatvor release key; nothing was installed",
+      "installedAfter": false,
+      "want": "exit 1, installed=False",
+      "pass": true
+    },
+    "signature byte flipped": {
+      "exitCode": 1,
+      "seconds": 0.82,
+      "output": "install.ps1: SHA256SUMS signature is NOT valid for the Zatvor release key; nothing was installed",
+      "installedAfter": false,
+      "want": "exit 1, installed=False",
+      "pass": true
+    },
+    "SHA256SUMS changed after signing": {
+      "exitCode": 1,
+      "seconds": 0.87,
+      "output": "install.ps1: SHA256SUMS signature is NOT valid for the Zatvor release key; nothing was installed",
+      "installedAfter": false,
+      "want": "exit 1, installed=False",
+      "pass": true
+    },
+    "installer changed (hash mismatch)": {
+      "exitCode": 1,
+      "seconds": 0.93,
+      "output": "SHA256SUMS signature: valid\r\ninstall.ps1: zatvor-setup-0.0.1.exe SHA-256 a7efb91dc22a97dd0e5826d52bf448db78c3aed7bcdfa46621e20b81e9494847 does not match SHA256SUMS (ffa7be3c4478883e2f078e5ace3b9ad86e671211cf3f001067aa14e90d09e656); nothing was installed",
+      "installedAfter": false,
+      "want": "exit 1, installed=False",
+      "pass": true
+    },
+    "valid release, silent install": {
+      "exitCode": 0,
+      "seconds": 1.47,
+      "output": "SHA256SUMS signature: valid\r\nzatvor-setup-0.0.1.exe SHA-256: matches\r\ninstalled (zatvor-setup-0.0.1.exe, exit 0)",
+      "installedAfter": true,
+      "want": "exit 0, installed=True",
+      "pass": true,
+      "state": {
+        "dirExists": true,
+        "files": [
+          "unins000.dat",
+          "unins000.exe",
+          "VERSION.txt",
+          "zatvor.exe"
+        ],
+        "versionTxt": "0.0.1",
+        "exeVersionOut": "0.0.0-dev",
+        "arpEntries": [
+          {
+            "Key": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{937479BC-4AC5-463F-B8E6-A1459359920F}_is1",
+            "DisplayName": "Zatvor",
+            "DisplayVersion": "0.0.1",
+            "InstallLocation": "C:\\Program Files\\Zatvor\\",
+            "UninstallString": "\"C:\\Program Files\\Zatvor\\unins000.exe\"",
+            "QuietUninstallString": "\"C:\\Program Files\\Zatvor\\unins000.exe\" /SILENT",
+            "EstimatedSizeKB": 6027
+          }
+        ],
+        "startMenuLnk": true,
+        "hklmSoftwareKey": false
+      },
+      "uninstall": {
+        "exitCode": 0,
+        "seconds": 0.75,
+        "command": "C:\\Program Files\\Zatvor\\unins000.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\zatvor-e2e-ad6e2dd4112c424fab20fc20444ceec1\\uninstall.log\"",
+        "secondsUntilGone": 0.15
+      },
+      "leftovers": {
+        "dirExists": false,
+        "files": [],
+        "versionTxt": null,
+        "exeVersionOut": null,
+        "arpEntries": [],
+        "startMenuLnk": false,
+        "hklmSoftwareKey": false
+      }
+    }
+  },
+  "failed": []
+}

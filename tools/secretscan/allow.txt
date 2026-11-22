@@ -3,3 +3,32 @@
 # Placeholder hostname used as the "real-looking" example in the plan's
 # secretscan test description (docs/superpowers/plans/...); not a real panel.
 panel.real-host.ru
+
+# Public DNS resolver addresses in testdata/fixtures (not secrets).
+# 1.1.1.1 / 1.0.0.1: Cloudflare; 8.8.8.8: Google; 77.88.8.8: Yandex DNS.
+1.1.1.1
+1.0.0.1
+8.8.8.8
+77.88.8.8
+
+# Public A records of the nalog.ru tax-service hosts, listed in DnsHosts of
+# happ-routing.json and xray-hy2-dns-legacy.json fixtures. Public, not secrets.
+213.24.64.175
+213.24.64.181
+
+# generated test keys for amneziawg.conf fixture, never used anywhere
+R7P0Q/Fb88jse9Cj3bJefKA1huFoA78EJCN7bX9GF0g=
+23pD0I1WHn4wH0Nv3zfR9n1f3V/P3zqY4c16aLejkmE=
+xdnWs6bS+g+cHkNi6xBIImJSJNBZXUoHy6DwPZG52Qk=
+
+# Installer identity GUIDs of the stage 0c prototypes (proto/installer): the
+# Inno Setup AppId and the WiX UpgradeCode. Public by design, not secrets.
+937479BC-4AC5-463F-B8E6-A1459359920F
+F1EE344A-8F54-414D-96AD-5D33B283DC37
+
+# MSI ProductCodes that WiX generated for the CI builds whose raw results are
+# kept in proto/installer/results (runs 44945146447, 44945485474). Public.
+13D30323-4A8F-4FCA-8191-8EE296C85B93
+B2A6B53B-B678-4623-97A3-189716701040
+E0C87662-88A1-48CC-8E12-C2CB6A0338D0
+F6058E54-2338-4E4C-9D13-B2C91CD888AE

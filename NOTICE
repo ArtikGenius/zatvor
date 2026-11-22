@@ -13,3 +13,44 @@ roscomvpn geoip / geosite data
 domain-list-community (MIT)
   https://github.com/v2fly/domain-list-community
   Copyright (c) v2fly contributors.
+
+golang.org/x/sys (BSD-3-Clause)
+  https://go.googlesource.com/sys
+  Copyright 2009 The Go Authors. Go module, compiled into Zatvor binaries.
+
+Prototype-only components (proto/tun, stage 0c; not part of any Zatvor
+release unless ADR 0003 picks variant B):
+
+sing-tun (GPL-3.0-or-later)
+  https://github.com/SagerNet/sing-tun  v0.9.6
+  Copyright (C) 2022 by nekohasekai. Go module, compiled into proto/tun/b.
+  It embeds the Wintun driver DLL (see below).
+
+sing (GPL-3.0-or-later)
+  https://github.com/SagerNet/sing  v0.8.12-0.20260717023913-84ab32b56cb8
+  Copyright (C) 2022 by nekohasekai. Go module, dependency of sing-tun.
+
+Wintun (prebuilt binaries under the WireGuard LLC "Prebuilt Binaries
+License"; source GPL-2.0 / MIT)
+  https://www.wintun.net/  wintun-0.14.1.zip
+  Downloaded with a pinned SHA-256 by proto/tun/check/Check.ps1 on CI for
+  variant A (wintun.dll next to xray.exe); embedded by sing-tun in variant B.
+  Redistribution terms must be checked before shipping (stage 3).
+
+Onest typeface (SIL Open Font License 1.1)
+  https://github.com/simpals/onest
+  Copyright 2021 The Onest Project Authors. Variable woff2 (cyrillic and
+  latin subsets) taken from the npm package @fontsource-variable/onest 5.3.1;
+  bundled in proto/ui/shared/fonts with its licence (OFL.txt). Used by the UI.
+
+Prototype-only components (proto/ui, stage 0c; ADR 0005 picks one of them
+for zatvor-ui):
+
+Tauri 2 (Apache-2.0 OR MIT)
+  https://github.com/tauri-apps/tauri  tauri 2.12.7, tauri-build 2.7.6,
+  @tauri-apps/cli 2.12.6. Rust crates compiled into proto/ui/tauri, with
+  their own dependencies (Cargo.lock), including sysinfo 0.40.4 (MIT).
+
+Wails v3 (MIT)
+  https://github.com/wailsapp/wails  v3.1.0
+  Go module, compiled into proto/ui/wails, with its dependencies (go.sum).

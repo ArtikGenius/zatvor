@@ -1,0 +1,341 @@
+{
+ "metrics": {
+  "arch": "aarch64",
+  "binaryMB": 7.1,
+  "bundleMB": 7.3,
+  "childProcesses": [
+   {
+    "footprintMB": 20.9,
+    "link": "self",
+    "name": "zatvor-proto-tauri",
+    "pid": 6069,
+    "ppid": 1,
+    "rssMB": 79.3
+   },
+   {
+    "footprintMB": 9.7,
+    "link": "responsible",
+    "name": "MTLCompilerService",
+    "pid": 6081,
+    "ppid": 1,
+    "rssMB": 12.5
+   },
+   {
+    "footprintMB": 14.6,
+    "link": "responsible",
+    "name": "com.apple.WebKit.WebContent",
+    "pid": 6074,
+    "ppid": 1,
+    "rssMB": 45.4
+   },
+   {
+    "footprintMB": 5.8,
+    "link": "responsible",
+    "name": "com.apple.WebKit.Networking",
+    "pid": 6073,
+    "ppid": 1,
+    "rssMB": 23.9
+   },
+   {
+    "footprintMB": 12.8,
+    "link": "responsible",
+    "name": "MTLCompilerService",
+    "pid": 6080,
+    "ppid": 1,
+    "rssMB": 15.2
+   }
+  ],
+  "exe": "/Users/runner/work/zatvor/zatvor/work/ZatvorProtoTauri.app/Contents/MacOS/zatvor-proto-tauri",
+  "framework": "tauri",
+  "frameworkVersion": "2.12.7",
+  "hiddenFootprintMB": 63.9,
+  "hiddenPrivateMB": "not measured: no private-bytes counter in sysinfo on this OS",
+  "hiddenRssMB": 176.3,
+  "memoryNote": "macOS: WebKit helpers are found by responsible PID (they are launchd children); resident size double-counts shared pages",
+  "method": "self-test: hidden 60 s, then 20 code toggles; openMs = show() call to the page's requestAnimationFrame callback reported over IPC (median)",
+  "notes": [],
+  "openMs": 7.5,
+  "openMsFirstShow": 255.0,
+  "openMsMax": 255.0,
+  "openMsMin": 4.6,
+  "os": "macos",
+  "processesAfterToggles": [
+   {
+    "footprintMB": 21.3,
+    "link": "self",
+    "name": "zatvor-proto-tauri",
+    "pid": 6069,
+    "ppid": 1,
+    "rssMB": 76.1
+   },
+   {
+    "footprintMB": 16.4,
+    "link": "responsible",
+    "name": "com.apple.WebKit.WebContent",
+    "pid": 6074,
+    "ppid": 1,
+    "rssMB": 44.0
+   },
+   {
+    "footprintMB": 7.0,
+    "link": "responsible",
+    "name": "MTLCompilerService",
+    "pid": 6081,
+    "ppid": 1,
+    "rssMB": 10.3
+   },
+   {
+    "footprintMB": 10.2,
+    "link": "responsible",
+    "name": "MTLCompilerService",
+    "pid": 6080,
+    "ppid": 1,
+    "rssMB": 11.0
+   },
+   {
+    "footprintMB": 6.5,
+    "link": "responsible",
+    "name": "com.apple.WebKit.Networking",
+    "pid": 6073,
+    "ppid": 1,
+    "rssMB": 18.4
+   }
+  ],
+  "rssAfterTogglesMB": 159.8,
+  "samples": [
+   {
+    "id": 0,
+    "paintMs": 255.0,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281766937707000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 1,
+    "paintMs": 5.6,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281768215493000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 2,
+    "paintMs": 10.4,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281769241846000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 3,
+    "paintMs": 29.8,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281770270781000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 4,
+    "paintMs": 6.1,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281771311630000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 5,
+    "paintMs": 4.6,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281772334377000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 6,
+    "paintMs": 4.9,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281773360094000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 7,
+    "paintMs": 7.5,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281774385771000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 8,
+    "paintMs": 8.0,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281775402747000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 9,
+    "paintMs": 5.6,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281776424717000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 10,
+    "paintMs": 7.9,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281777447459000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 11,
+    "paintMs": 6.1,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281778473570000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 12,
+    "paintMs": 6.0,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281779500801000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 13,
+    "paintMs": 7.4,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281780528123000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 14,
+    "paintMs": 8.4,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281781553551000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 15,
+    "paintMs": 7.9,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281782571008000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 16,
+    "paintMs": 7.3,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281783586668000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 17,
+    "paintMs": 14.2,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281784614554000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 18,
+    "paintMs": 10.9,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281785634964000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   },
+   {
+    "id": 19,
+    "paintMs": 5.9,
+    "showCallMs": 0.0,
+    "t0UnixNs": 1795281786666794000,
+    "visAtEval": "hidden",
+    "visAtRaf": "visible",
+    "visibleAfterShow": true
+   }
+  ],
+  "selfTestSeconds": 80,
+  "timestampUnix": 1795281787,
+  "webkitProcessesSeen": [
+   {
+    "name": "com.apple.WebKit.WebContent",
+    "pid": 6074,
+    "ppid": 1,
+    "responsible": 6069,
+    "rssMB": 45.4
+   },
+   {
+    "name": "com.apple.WebKit.Networking",
+    "pid": 6073,
+    "ppid": 1,
+    "responsible": 6069,
+    "rssMB": 23.9
+   },
+   {
+    "name": "com.apple.WebKit.Networking",
+    "pid": 7162,
+    "ppid": null,
+    "responsible": -1,
+    "rssMB": 0.0
+   },
+   {
+    "name": "com.apple.WebKit.WebContent",
+    "pid": 7156,
+    "ppid": 1,
+    "responsible": 429,
+    "rssMB": 46.1
+   },
+   {
+    "name": "com.apple.WebKit.WebContent",
+    "pid": 7167,
+    "ppid": 1,
+    "responsible": 429,
+    "rssMB": 42.2
+   },
+   {
+    "name": "com.apple.WebKit.WebContent",
+    "pid": 7163,
+    "ppid": null,
+    "responsible": -1,
+    "rssMB": 0.0
+   },
+   {
+    "name": "com.apple.WebKit.Networking",
+    "pid": 7155,
+    "ppid": 1,
+    "responsible": 429,
+    "rssMB": 23.2
+   }
+  ]
+ }
+}

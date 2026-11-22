@@ -1,0 +1,314 @@
+{
+ "variant": "B",
+ "dnsLeakV4": 0,
+ "dnsLeakV6": 0,
+ "bypassPackets": 0,
+ "killRecovery": true,
+ "adapterLeftovers": 1,
+ "throughputMbps": 1735.9,
+ "cpuIdlePct": 0.052,
+ "perAppRule": true,
+ "sleepWake": "not measured in 0c, moved to stage 3 Hyper-V VM check (a CI runner cannot sleep)",
+ "details": {
+  "os": "Microsoft Windows Server 2025 Datacenter 10.0.26100",
+  "cores": 4,
+  "runner": "GitHub Actions 1000000837",
+  "physicalAdapter": "Ethernet 3 | Microsoft Hyper-V Network Adapter #3 | 7C-ED-8D-6D-CD-08",
+  "physicalAdapters": [
+   "Ethernet 3 | Microsoft Hyper-V Network Adapter #3 | 7C-ED-8D-6D-CD-08 | Up",
+   "Ethernet 4 | Mellanox ConnectX-4 Lx Virtual Ethernet Adapter | 7C-ED-8D-6D-CD-08 | Up"
+  ],
+  "ipv6DefaultRoute": false,
+  "ipv6Internet": false,
+  "baselineDns": [
+   "Ethernet 3|2|168.63.129.16",
+   "Loopback Pseudo-Interface 1|23|fec0:0:0:ffff::1,fec0:0:0:ffff::2,fec0:0:0:ffff::3",
+   "vEthernet (nat)|23|fec0:0:0:ffff::1,fec0:0:0:ffff::2,fec0:0:0:ffff::3"
+  ],
+  "upstreamProbe": "zatvor-tunnel",
+  "upstreamInternet": "200",
+  "curlPathFromGetProcess": "C:\\Windows\\system32\\curl.exe",
+  "curlPath": "C:\\Windows\\System32\\curl.exe",
+  "loopbackBaselineMbps": 28818.0,
+  "control": {
+   "components": "physical by MAC: 3,38",
+   "counts": {
+    "packets": 281,
+    "ipv4": 281,
+    "ipv6": 0,
+    "other": 0,
+    "dnsV4": 84,
+    "dnsV6": 0,
+    "dnsV4Flows": 24,
+    "dnsV6Flows": 0,
+    "probe": 27,
+    "probeFlows": 3,
+    "samples": [
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63966",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63966",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63966",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63966",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63966 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63966",
+     "proto 17 10.1.0.10:63967 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63967 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63967",
+     "proto 17 10.1.0.10:63968 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63968 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63968",
+     "proto 17 10.1.0.10:63969 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63969 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63969",
+     "proto 17 10.1.0.10:63970 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63970 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63970",
+     "proto 17 10.1.0.10:63971 -> 168.63.129.16:53",
+     "proto 17 10.1.0.10:63971 -> 168.63.129.16:53",
+     "proto 17 168.63.129.16:53 -> 10.1.0.10:63971"
+    ],
+    "topEndpoints": [
+     "60 x proto 6 168.63.129.16:80",
+     "38 x proto 17 168.63.129.16:53",
+     "18 x proto 17 1.1.1.1:53",
+     "16 x proto 6 20.75.202.224:443",
+     "10 x proto 6 1.1.1.1:80",
+     "10 x proto 6 10.1.0.10:49981",
+     "10 x proto 6 168.63.129.16:32526",
+     "9 x proto 6 10.1.0.10:56483",
+     "8 x proto 6 10.1.0.10:49966",
+     "6 x proto 6 20.85.130.105:443",
+     "5 x proto 17 10.1.0.10:63966",
+     "4 x proto 6 10.1.0.10:49680",
+     "4 x proto 6 10.1.0.10:49991",
+     "4 x proto 6 10.1.0.10:49992",
+     "4 x proto 6 10.1.0.10:56485"
+    ]
+   },
+   "workload": {
+    "resolveA": "ERR: zl4-70b9e6ba958f : DNS name does not exist.",
+    "resolveAAAA": "ERR: zl6-41a3bbb09d41 : DNS name does not exist.",
+    "resolveRealA": "OK: 198.35.26.224",
+    "resolveRealAAAA": "OK: 2620:0:863:ed1a::1",
+    "resolveProbe": "ERR: zatvor-probe.test : DNS name does not exist.",
+    "nslookupDefault": "Server:  UnKnown\r\nAddress:  168.63.129.16\r\n\r\nName:    zn-5e252a338e12.example.org",
+    "nslookupAAAA": "Non-authoritative answer:\r\n\r\nServer:  UnKnown\r\nAddress:  168.63.129.16\r\n\r\nName:    dyna.wikimedia.org\r\nAddress:  2620:0:863:ed1a::1\r\nAliases:  www.wikipedia.org",
+    "nslookupPublic": "*** one.one.one.one can't find zatvor-probe.test: Non-existent domain\r\n\r\nServer:  one.one.one.one\r\nAddress:  1.1.1.1",
+    "nslookupPublic6": "*** UnKnown can't find zatvor-probe.test: No response from server\r\n\r\nServer:  UnKnown\r\nAddress:  2606:4700:4700::1111",
+    "httpProbe4": "ERR: connect timeout",
+    "httpProbe6": "ERR: One or more errors occurred. (A socket operation was attempted to an unreachable network.) Exception calling \"Wait\" with \"1\" argument(s): \"One or more errors occurred. (A socket operation was attempted to an unreachable network.)\"",
+    "http1111": "HTTP/1.1 301 Moved Permanently\r\nServer: cloudflare\r\nDate: Sat, 21 Nov 2026 16:26:31 GMT\r\nContent-Type: text/html\r\nContent-Length: 167\r\nConnection: close\r\nLocation: https://1.1.1.1/\r\nCF-RAY: a5e10e78695f5f13-SJC\r\n\r\n<html>\r\n<head><title>301 Moved Permanently</title></head>\r\n<body>\r\n<center><h1>301 Moved Permanently</h1></center>\r\n<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n",
+    "tcpBench": false
+   }
+  },
+  "tunUp": true,
+  "tunUpSeconds": 3.42,
+  "tunSnapshot": {
+   "adapters": [
+    "6to4 Adapter||Not Present",
+    "Ethernet (Kernel Debugger)|Microsoft Kernel Debug Network Adapter|Not Present",
+    "Ethernet 3|Microsoft Hyper-V Network Adapter #3|Up",
+    "Ethernet 4|Mellanox ConnectX-4 Lx Virtual Ethernet Adapter|Up",
+    "Microsoft IP-HTTPS Platform Interface||Not Present",
+    "Teredo Tunneling Pseudo-Interface||Not Present",
+    "vEthernet (nat)|Hyper-V Virtual Ethernet Adapter|Up",
+    "vSwitch (nat)|Hyper-V Virtual Switch Extension Adapter|Up",
+    "zatvor-b|sing-tun Tunnel|Up"
+   ],
+   "pnp": [
+    "Hyper-V Virtual Switch Extension Adapter|ROOT\\VMS_VSMP\\0000|OK",
+    "Mellanox ConnectX-4 Lx Virtual Ethernet Adapter|PCI\\VEN_15B3&DEV_1016&SUBSYS_019015B3&REV_80\\5&354C640C&0&2|OK",
+    "Microsoft Hyper-V Network Adapter #2|VMBUS\\{GUID}\\{GUID}|Unknown",
+    "Microsoft Hyper-V Network Adapter #3|VMBUS\\{GUID}\\{GUID}|OK",
+    "Microsoft Hyper-V Network Adapter|VMBUS\\{GUID}\\{GUID}|Unknown",
+    "Microsoft Kernel Debug Network Adapter|ROOT\\KDNIC\\0000|OK",
+    "sing-tun Tunnel|SWD\\WINTUN\\{GUID}|OK"
+   ],
+   "routes": [
+    "Ethernet 3|0.0.0.0/0|10.1.0.1",
+    "Ethernet 3|10.1.0.0/20|0.0.0.0",
+    "Ethernet 3|10.1.0.10/32|0.0.0.0",
+    "Ethernet 3|10.1.15.255/32|0.0.0.0",
+    "Ethernet 3|168.63.129.16/32|10.1.0.1",
+    "Ethernet 3|169.254.169.254/32|10.1.0.1",
+    "Ethernet 3|224.0.0.0/4|0.0.0.0",
+    "Ethernet 3|255.255.255.255/32|0.0.0.0",
+    "Ethernet 3|fe80::/64|::",
+    "Ethernet 3|fe80::33ea:eafe:1e72:4b1b/128|::",
+    "Ethernet 3|ff00::/8|::",
+    "Loopback Pseudo-Interface 1|::1/128|::",
+    "Loopback Pseudo-Interface 1|127.0.0.0/8|0.0.0.0",
+    "Loopback Pseudo-Interface 1|127.0.0.1/32|0.0.0.0",
+    "Loopback Pseudo-Interface 1|127.255.255.255/32|0.0.0.0",
+    "Loopback Pseudo-Interface 1|224.0.0.0/4|0.0.0.0",
+    "Loopback Pseudo-Interface 1|255.255.255.255/32|0.0.0.0",
+    "Loopback Pseudo-Interface 1|ff00::/8|::",
+    "vEthernet (nat)|172.25.208.0/20|0.0.0.0",
+    "vEthernet (nat)|172.25.208.1/32|0.0.0.0",
+    "vEthernet (nat)|172.25.223.255/32|0.0.0.0",
+    "vEthernet (nat)|224.0.0.0/4|0.0.0.0",
+    "vEthernet (nat)|255.255.255.255/32|0.0.0.0",
+    "vEthernet (nat)|fe80::/64|::",
+    "vEthernet (nat)|fe80::7959:1017:a897:983e/128|::",
+    "vEthernet (nat)|ff00::/8|::",
+    "zatvor-b|::/0|fdfe:dcba:9876::2",
+    "zatvor-b|0.0.0.0/0|172.19.0.2",
+    "zatvor-b|172.19.0.0/30|0.0.0.0",
+    "zatvor-b|172.19.0.1/32|0.0.0.0",
+    "zatvor-b|172.19.0.3/32|0.0.0.0",
+    "zatvor-b|224.0.0.0/4|0.0.0.0",
+    "zatvor-b|255.255.255.255/32|0.0.0.0",
+    "zatvor-b|fdfe:dcba:9876::/126|::",
+    "zatvor-b|fdfe:dcba:9876::1/128|::",
+    "zatvor-b|ff00::/8|::"
+   ],
+   "dns": [
+    "Ethernet 3|2|168.63.129.16",
+    "Loopback Pseudo-Interface 1|23|fec0:0:0:ffff::1,fec0:0:0:ffff::2,fec0:0:0:ffff::3",
+    "vEthernet (nat)|23|fec0:0:0:ffff::1,fec0:0:0:ffff::2,fec0:0:0:ffff::3",
+    "zatvor-b|2|172.19.0.2",
+    "zatvor-b|23|fdfe:dcba:9876::2"
+   ]
+  },
+  "functional": {
+   "http4": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: Sat, 21 Nov 2026 16:26:51 GMT\r\nContent-Length: 14\r\n\r\nzatvor-tunnel\n",
+   "http6": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: Sat, 21 Nov 2026 16:26:53 GMT\r\nContent-Length: 14\r\n\r\nzatvor-tunnel\n",
+   "dnsProbe": "OK: 198.18.0.10",
+   "realHttps": "200"
+  },
+  "tunnelWorks": true,
+  "tunnelCapture": {
+   "components": "physical by MAC: 3,38",
+   "counts": {
+    "packets": 440,
+    "ipv4": 440,
+    "ipv6": 0,
+    "other": 0,
+    "dnsV4": 0,
+    "dnsV6": 0,
+    "dnsV4Flows": 0,
+    "dnsV6Flows": 0,
+    "probe": 0,
+    "probeFlows": 0,
+    "samples": [],
+    "topEndpoints": [
+     "120 x proto 6 168.63.129.16:80",
+     "64 x proto 6 10.1.0.10:56602",
+     "60 x proto 6 1.1.1.1:443",
+     "28 x proto 6 20.75.202.224:443",
+     "24 x proto 6 168.63.129.16:32526",
+     "23 x proto 6 10.1.0.10:56667",
+     "14 x proto 6 140.82.114.22:443",
+     "8 x proto 6 10.1.0.10:49680",
+     "6 x proto 6 10.1.0.10:49992",
+     "4 x proto 6 10.1.0.10:49981",
+     "4 x proto 6 10.1.0.10:49994",
+     "4 x proto 6 10.1.0.10:49997",
+     "4 x proto 6 10.1.0.10:56659",
+     "4 x proto 6 10.1.0.10:56668",
+     "4 x proto 6 10.1.0.10:56669"
+    ]
+   },
+   "workload": {
+    "resolveA": "ERR: zl4-aff53c33054c : DNS name does not exist.",
+    "resolveAAAA": "ERR: zl6-97196843d024 : DNS name does not exist.",
+    "resolveRealA": "OK: 198.35.26.224",
+    "resolveRealAAAA": "OK: 2620:0:863:ed1a::1",
+    "resolveProbe": "OK: 198.18.0.10",
+    "nslookupDefault": "*** No internal type for both IPv4 and IPv6 Addresses (A+AAAA) records available for zn-080c10664f88.example.org\r\n\r\nServer:  UnKnown\r\nAddress:  fdfe:dcba:9876::2",
+    "nslookupAAAA": "Server:  UnKnown\r\nAddress:  fdfe:dcba:9876::2\r\n\r\nName:    www.wikipedia.org\r\nAddress:  2620:0:863:ed1a::1",
+    "nslookupPublic": "Server:  UnKnown\r\nAddress:  1.1.1.1\r\n\r\nName:    zatvor-probe.test\r\nAddresses:  2001:db8::10\r\n\t  198.18.0.10",
+    "nslookupPublic6": "Server:  UnKnown\r\nAddress:  2606:4700:4700::1111\r\n\r\nName:    zatvor-probe.test\r\nAddresses:  2001:db8::10\r\n\t  198.18.0.10",
+    "httpProbe4": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: Sat, 21 Nov 2026 16:27:12 GMT\r\nContent-Length: 14\r\n\r\nzatvor-tunnel\n",
+    "httpProbe6": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: Sat, 21 Nov 2026 16:27:14 GMT\r\nContent-Length: 14\r\n\r\nzatvor-tunnel\n",
+    "http1111": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: Sat, 21 Nov 2026 16:27:16 GMT\r\nContent-Length: 14\r\n\r\nzatvor-tunnel\n",
+    "tcpBench": true
+   }
+  },
+  "perApp": {
+   "at": "16:27:29.304",
+   "secondsAfterTunUp": 41.2,
+   "curl": "HTTP/1.1 301 Moved Permanently\r\nServer: cloudflare\r\nDate: Sat, 21 Nov 2026 16:27:29 GMT\r\nContent-Type: text/html\r\nContent-Length: 167\r\nConnection: keep-alive\r\nLocation: https://1.1.1.1/\r\nCF-RAY: a5e10",
+   "curlDirect": true,
+   "powershell": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: Sat, 21 Nov 2026 16:27:29 GMT\r\nContent-Length: 14\r\n\r\nzatvor-tunnel\n",
+   "powershellTunnel": true,
+   "nslookup": "Server:  UnKnown\r\nAddress:  1.1.1.1\r\n\r\nName:    zatvor-probe.test\r\nAddresses:  2001:db8::10\r\n\t  198.18.0.10",
+   "nslookupTunnel": true,
+   "pass": true
+  },
+  "throughput": {
+   "bytes": 6509585960,
+   "seconds": 30.0005217,
+   "mbps": 1735.8594027383197
+  },
+  "cpu": {
+   "b": 0.047,
+   "b-totalBefore": 33.641,
+   "client-xray": 0.078,
+   "client-xray-totalBefore": 4.359,
+   "wallSeconds": 60.0,
+   "pctOfOneCore": 0.208
+  },
+  "perAppLate": {
+   "at": "16:29:06.461",
+   "secondsAfterTunUp": 138.3,
+   "curl": "HTTP/1.1 301 Moved Permanently\r\nServer: cloudflare\r\nDate: Sat, 21 Nov 2026 16:29:06 GMT\r\nContent-Type: text/html\r\nContent-Length: 167\r\nConnection: keep-alive\r\nLocation: https://1.1.1.1/\r\nCF-RAY: a5e11",
+   "curlDirect": true,
+   "powershell": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: Sat, 21 Nov 2026 16:29:06 GMT\r\nContent-Length: 14\r\n\r\nzatvor-tunnel\n",
+   "powershellTunnel": true,
+   "nslookup": "Server:  UnKnown\r\nAddress:  1.1.1.1\r\n\r\nName:    zatvor-probe.test\r\nAddresses:  2001:db8::10\r\n\t  198.18.0.10",
+   "nslookupTunnel": true,
+   "pass": true
+  },
+  "wfpFiltersBeforeKill": 10,
+  "kill": {
+   "adapterGoneS": 0.05,
+   "routesCleanS": 0.05,
+   "internetS": 0.33,
+   "routeDiff": {
+    "added": [],
+    "removed": []
+   },
+   "dnsDiff": {
+    "added": [],
+    "removed": []
+   },
+   "wfpFiltersAfterKill": 4,
+   "routesRestored": true
+  },
+  "restart": {
+   "up": true,
+   "tunUpSeconds": 0.37,
+   "http4": "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nDate: Sat, 21 Nov 2026 16:29:17 GMT\r\nContent-Length: 14\r\n\r\nzatvor-tunnel\n",
+   "tunnelWorks": true,
+   "devnodesWhileUp": [
+    "SWD\\WINTUN\\{GUID}|OK"
+   ],
+   "devnodesAfter": [
+    "sing-tun Tunnel|SWD\\WINTUN\\{GUID}|Unknown"
+   ]
+  },
+  "leftovers": {
+   "adapters": {
+    "added": [],
+    "removed": []
+   },
+   "pnp": {
+    "added": [
+     "sing-tun Tunnel|SWD\\WINTUN\\{GUID}|Unknown"
+    ],
+    "removed": []
+   },
+   "presentAdapters": 0,
+   "newDevnodes": 1
+  }
+ }
+}

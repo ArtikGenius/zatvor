@@ -1,0 +1,6 @@
+tauri/target/
+tauri/node_modules/
+wails/build/
+*.exe
+metrics.json
+tauri/gen/
