@@ -62,7 +62,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            pkgs: ./internal/systest/... ./internal/proc/freeze/... ./internal/sysproxy/... ./internal/store/...
+            pkgs: ./internal/systest/... ./internal/proc/freeze/... ./internal/sysproxy/... ./internal/store/... ./internal/daemon/...
           - os: ubuntu-latest
             pkgs: ./internal/systest/...
     runs-on: ${{ matrix.os }}
@@ -81,6 +81,11 @@ jobs:
           path: third_party/geo/files
           key: geo-${{ hashFiles('third_party/geo/pin.json') }}
       - run: go run ./tools/geofetch -dest third_party/geo/files
+      # The live daemon tests (internal/daemon) run the pinned Xray.
+      - if: matrix.os == 'windows-latest'
+        run: go run ./tools/xrayfetch -platform windows-amd64 -dest third_party/xray/bin/windows-amd64
+      - if: matrix.os == 'windows-latest'
+        run: echo "ZATVOR_XRAY=$GITHUB_WORKSPACE/third_party/xray/bin/windows-amd64/xray.exe" >> "$GITHUB_ENV"
       - run: go vet -tags systemtest ./...
       - run: go test -tags systemtest -v ${{ matrix.pkgs }}
 
