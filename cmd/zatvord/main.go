@@ -26,6 +26,7 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/appdir"
 	"github.com/ArtikGenius/zatvor/internal/daemon"
 	"github.com/ArtikGenius/zatvor/internal/instance"
+	"github.com/ArtikGenius/zatvor/internal/journal"
 	"github.com/ArtikGenius/zatvor/internal/safemode"
 	"github.com/ArtikGenius/zatvor/internal/supervisor"
 )
@@ -53,7 +54,8 @@ func run(args []string, env func(string) string, stdin io.Reader, stdout, stderr
 		fmt.Fprintf(stderr, "zatvord: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	mode, src := resolveMode(args, env)
+	// The ADR 0004 gate, the same for --print-mode and the run.
+	mode, src := safemode.Resolve(args, env)
 	switch {
 	case *showVersion:
 		fmt.Fprintln(stdout, version)
@@ -88,11 +90,7 @@ func run(args []string, env func(string) string, stdin io.Reader, stdout, stderr
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
 		return 1
 	}
-	logw := stderr
-	if f, err := os.OpenFile(filepath.Join(dirs.Logs, logFile), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600); err == nil {
-		defer f.Close()
-		logw = io.MultiWriter(f, stderr)
-	}
+	logw := teeLog{newRotatingLog(filepath.Join(dirs.Logs, logFile), logMax), stderr}
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
@@ -121,11 +119,6 @@ func run(args []string, env func(string) string, stdin io.Reader, stdout, stderr
 	return runSupervisor(ctx, opts, exe, stdout, stderr)
 }
 
-// resolveMode is the ADR 0004 gate, the same for --print-mode and the run.
-func resolveMode(args []string, env func(string) string) (safemode.Mode, safemode.Source) {
-	return safemode.Resolve(args, env)
-}
-
 // modeArg is the flag that gives the child the mode this process resolved.
 func modeArg(m safemode.Mode) string {
 	if m == safemode.Live {
@@ -143,6 +136,28 @@ func userHome(env func(string) string) string {
 		return env("USERPROFILE")
 	}
 	return env("HOME")
+}
+
+// openSupervisorJournal opens the journal of opts.Mode (R16) and its
+// reverters while holding the instance lock name, so journal.Open (which
+// drops a torn last line) never runs while another daemon owns that
+// journal. already is true, with nothing opened, when another instance
+// holds the lock. The lock is released before returning: the child takes
+// it.
+func openSupervisorJournal(opts daemon.Options, name string) (*journal.Journal, map[string]journal.Reverter, func() error, bool, error) {
+	release, already, err := instance.Acquire(name)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	if already {
+		return nil, nil, nil, true, nil
+	}
+	defer release()
+	j, rs, closeRec, err := daemon.Reverters(opts)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	return j, rs, closeRec, false, nil
 }
 
 // runChild runs the daemon until a signal or until stdin closes.
@@ -166,7 +181,7 @@ func runChild(ctx context.Context, opts daemon.Options, stdin io.Reader, stderr 
 // launch while a daemon runs only forwards to it.
 func runSupervisor(ctx context.Context, opts daemon.Options, exe string, stdout, stderr io.Writer) int {
 	name := instance.Name(opts.Dirs)
-	release, already, err := instance.Acquire(name)
+	j, rs, closeRec, already, err := openSupervisorJournal(opts, name)
 	if err != nil {
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
 		return 1
@@ -177,14 +192,6 @@ func runSupervisor(ctx context.Context, opts daemon.Options, exe string, stdout,
 			return 1
 		}
 		return 0
-	}
-	release()
-
-	// R16: the journal of the child's mode, opened before any child runs.
-	j, rs, closeRec, err := daemon.Reverters(opts)
-	if err != nil {
-		fmt.Fprintf(stderr, "zatvord: %v\n", err)
-		return 1
 	}
 	defer closeRec()
 	args := childArgs(opts.Dirs, modeArg(opts.Mode))

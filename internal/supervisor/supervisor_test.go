@@ -412,3 +412,50 @@ func TestSupervisorCancelledBeforeStartTouchesNothing(t *testing.T) {
 		t.Fatal("no child crashed, so nothing may be reverted")
 	}
 }
+
+// blockingClock never fires a backoff wait; it reports each wait on waits.
+type blockingClock struct {
+	*fakeClock
+	waits chan time.Duration
+}
+
+func (c *blockingClock) After(d time.Duration) <-chan time.Time {
+	c.waits <- d
+	return make(chan time.Time)
+}
+
+func TestSupervisorRevertsOnCancelDuringBackoff(t *testing.T) {
+	// R40b: the child crashed and so did not revert; ctx ends while the
+	// supervisor waits to restart it.
+	c := newChild(t)
+	j, r := pendingJournal(t)
+	r.onCall = func() {
+		if !c.lastExited() {
+			t.Error("reverter called while the child is alive")
+		}
+	}
+	clk := &blockingClock{fakeClock: newClock(), waits: make(chan time.Duration, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan result, 1)
+	go func() {
+		out <- result{supervisor.Run(ctx, c.factory(-1, ""), j, map[string]journal.Reverter{"fake": r}, clk)}
+	}()
+	select {
+	case d := <-clk.waits:
+		if d != time.Second {
+			t.Fatalf("first backoff = %v, want 1s", d)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("no backoff wait")
+	}
+	cancel()
+	if err := wait(t, out); err != nil {
+		t.Fatalf("Run = %v, want nil", err)
+	}
+	if c.starts() != 1 {
+		t.Fatalf("starts = %d, want 1 (no restart after cancel)", c.starts())
+	}
+	if r.Restores() != 1 || pendingCount(t, j) != 0 {
+		t.Fatalf("restores %d, pending %d; want the crashed child's entry reverted", r.Restores(), pendingCount(t, j))
+	}
+}

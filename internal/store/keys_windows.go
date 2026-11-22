@@ -4,7 +4,6 @@ package store
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -267,49 +266,33 @@ func DeleteCredManKey(target string) error {
 	return nil
 }
 
-// ErrKeyConflict: both a DPAPI key file and a Credential Manager key exist
-// and they differ, so it is unknown which one the store was written with.
-var ErrKeyConflict = errors.New("store: DPAPI key file and Credential Manager key differ")
-
 // MigrateDPAPIToCredMan moves the key of DPAPIFileKey(path) to
-// CredManKey(target), once (R17): when the DPAPI file exists and no
-// credential does, the credential is written with the same key bytes and
-// read back, and only when it reads back equal is the DPAPI file deleted.
-// With no DPAPI file it does nothing. When the credential already exists
-// with the same bytes (an earlier migration stopped before the delete) the
-// file is deleted; with other bytes nothing is touched and the error is
-// ErrKeyConflict. moved reports that the DPAPI file is gone now.
+// CredManKey(target), once (R17); see migrateKey for the steps.
 func MigrateDPAPIToCredMan(path, target string) (moved bool, err error) {
-	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, fmt.Errorf("%w: %w", ErrKey, err)
+	return migrateKey(path, func() ([]byte, error) { return dpapiKey{path}.read() }, winCreds{}, credTarget(target))
+}
+
+// winCreds is the credStore of Windows Credential Manager.
+type winCreds struct{}
+
+func (winCreds) Read(name string) ([]byte, error) {
+	b, err := credRead(name)
+	if errors.Is(err, windows.ERROR_NOT_FOUND) {
+		return nil, errCredNotFound
 	}
-	key, err := dpapiKey{path}.read()
+	return b, err
+}
+
+func (winCreds) Write(name string, key []byte) error { return credWrite(name, key) }
+
+func (winCreds) Delete(name string) error {
+	p, err := windows.UTF16PtrFromString(name)
 	if err != nil {
-		return false, err
+		return err
 	}
-	defer wipe(key)
-	name := credTarget(target)
-	have, err := credRead(name)
-	switch {
-	case errors.Is(err, windows.ERROR_NOT_FOUND):
-		if err := credWrite(name, key); err != nil {
-			return false, fmt.Errorf("%w: write credential: %w", ErrKey, err)
-		}
-		if have, err = credRead(name); err != nil {
-			return false, fmt.Errorf("%w: read credential back: %w", ErrKey, err)
-		}
-	case err != nil:
-		return false, fmt.Errorf("%w: read credential: %w", ErrKey, err)
+	r, _, e := procCredDelete.Call(uintptr(unsafe.Pointer(p)), credTypeGeneric, 0)
+	if r == 0 && !errors.Is(e, windows.ERROR_NOT_FOUND) {
+		return e
 	}
-	same := subtle.ConstantTimeCompare(have, key) == 1
-	wipe(have)
-	if !same {
-		return false, ErrKeyConflict
-	}
-	if err := os.Remove(path); err != nil {
-		return false, fmt.Errorf("%w: remove DPAPI key file: %w", ErrKey, err)
-	}
-	return true, nil
+	return nil
 }

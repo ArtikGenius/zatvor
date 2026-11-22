@@ -8,10 +8,20 @@
 // written. The daemon installs nothing system-wide (R41): its only system
 // changes in live mode are the system proxy, through the engine, and the
 // developer-tool files when the user turns that feature on.
+//
+// The two modes never share state that a system change depends on: each
+// has its own journal (Journal/safe, Journal/live; R16) and its own profile
+// store (Data/store/safe, Data/store/live; R43). The safe store's key is a
+// DPAPI-sealed file (store/safe.key; a plain key file off Windows), so a
+// safe start never needs Credential Manager. Only the live store uses
+// Credential Manager, after the one-time move of a DPAPI key file
+// store/live.key into it (R17).
 package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -47,8 +57,7 @@ import (
 // Names inside the data directories.
 const (
 	SettingsFile  = "settings.json"   // in Dirs.Data
-	StoreDir      = "store"           // in Dirs.Data
-	KeyFile       = "store.key"       // in Dirs.Data: the store key (FileKey or DPAPI-sealed)
+	StoreDir      = "store"           // in Dirs.Data: <mode>/ holds a store, <mode>.key its key file
 	BinDir        = "bin"             // in Dirs.Data: the dev-tool wrappers
 	SafeModeLog   = "safe-mode.jsonl" // in Dirs.Logs: what safe mode would have changed
 	StateFileName = "devtools.proxy"  // in Dirs.Run: the dev-tool proxy URL while connected
@@ -95,7 +104,9 @@ type hooks struct {
 	machineID string
 	engine    func(*engine.Deps)
 	started   func(addr string) // after the API started
-	onShow    func()
+	// writeState replaces the dev-tool state-file write of the pump.
+	writeState func(path, v string) error
+	onShow     func()
 }
 
 func (o *Options) defaults() {
@@ -488,17 +499,24 @@ func devToolRoots(o Options) devtools.Roots {
 		StateFile: filepath.Join(o.Dirs.Run, StateFileName), BinDir: filepath.Join(o.Dirs.Data, BinDir)}
 }
 
-// openStore opens the profile store with the key of the mode.
+// openStore opens the profile store of the mode (R43) with its key.
 func openStore(o Options, logf func(string, ...any)) (*store.Store, error) {
 	kp, err := keyProvider(o.Mode, o.Dirs, logf)
 	if err != nil {
 		return nil, fmt.Errorf("daemon: store key: %w", err)
 	}
-	s, err := store.Open(filepath.Join(o.Dirs.Data, StoreDir), kp)
+	s, err := store.Open(filepath.Join(o.Dirs.Data, StoreDir, o.Mode.String()), kp)
 	if err != nil {
 		return nil, fmt.Errorf("daemon: open the store: %w", err)
 	}
 	return s, nil
+}
+
+// keyPath is the key file of the mode's store: the key itself (FileKey) or
+// DPAPI-sealed; for the live store on Windows only the source of the R17
+// move.
+func keyPath(mode safemode.Mode, dirs appdir.Dirs) string {
+	return filepath.Join(dirs.Data, StoreDir, mode.String()+".key")
 }
 
 // credTarget names the Credential Manager key of one data directory, so two
@@ -506,6 +524,11 @@ func openStore(o Options, logf func(string, ...any)) (*store.Store, error) {
 // same credential.
 func credTarget(dirs appdir.Dirs) string {
 	return "store-" + shortHash(strings.ToLower(filepath.Clean(dirs.Data)))
+}
+
+func shortHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
 }
 
 // lockedWriter serializes the two recorders that share the safe-mode log.

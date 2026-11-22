@@ -15,9 +15,10 @@ import (
 // liveSupported: live mode exists on Windows only (R3, ADR 0004).
 const liveSupported = false
 
-// keyProvider is store.FileKey in both modes off Windows (R3).
-func keyProvider(_ safemode.Mode, dirs appdir.Dirs, _ func(string, ...any)) (store.KeyProvider, error) {
-	return store.FileKey(filepath.Join(dirs.Data, KeyFile)), nil
+// keyProvider is store.FileKey in both modes off Windows (R3), one key per
+// mode's store.
+func keyProvider(mode safemode.Mode, dirs appdir.Dirs, _ func(string, ...any)) (store.KeyProvider, error) {
+	return store.FileKey(keyPath(mode, dirs)), nil
 }
 
 func liveSystemProxy() (sysapi.SystemProxy, error) { return nil, ErrLiveRefused }

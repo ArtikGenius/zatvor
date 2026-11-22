@@ -17,11 +17,12 @@ import (
 // liveSupported: live mode exists on Windows only (R3, ADR 0004).
 const liveSupported = true
 
-// keyProvider is the store key of mode: a DPAPI-sealed file in safe mode;
-// in live mode Credential Manager, after a one-time move of the DPAPI key
-// (R17). Safe mode never touches Credential Manager.
+// keyProvider is the key of the mode's store: a DPAPI-sealed file for the
+// safe store; Credential Manager for the live store, after a one-time move
+// of a DPAPI key file of the live store (R17). Safe mode never touches
+// Credential Manager.
 func keyProvider(mode safemode.Mode, dirs appdir.Dirs, logf func(string, ...any)) (store.KeyProvider, error) {
-	path := filepath.Join(dirs.Data, KeyFile)
+	path := keyPath(mode, dirs)
 	if mode != safemode.Live {
 		return store.DPAPIFileKey(path), nil
 	}

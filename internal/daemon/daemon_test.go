@@ -776,3 +776,131 @@ func TestRewritesDiscoveryWhenRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// logBuffer collects the daemon log.
+type logBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *logBuffer) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
+func TestSafeStartIgnoresLiveStore(t *testing.T) {
+	// R43: the modes keep separate stores; a safe start never reads or
+	// touches the live one (nor its key).
+	r := newRig(t)
+	id := r.seed()
+	liveDir := filepath.Join(r.dirs.Data, StoreDir, "live")
+	if err := os.MkdirAll(liveDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{filepath.Join(liveDir, "profiles.zst"), filepath.Join(r.dirs.Data, StoreDir, "live.key")} {
+		if err := os.WriteFile(f, []byte("live data, not for safe mode"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		// Any read of the live store would fail and be logged.
+		if err := os.Chmod(liveDir, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(liveDir, 0o700) })
+	}
+	before := snapshot(t, filepath.Join(r.dirs.Data, StoreDir), filepath.Join(r.dirs.Data, StoreDir, "safe"))
+	lb := &logBuffer{}
+	r.opts.Log = lb
+	run := r.start()
+	st, body := run.call("GET", "/v1/profiles", nil)
+	if st != 200 || !strings.Contains(string(body), `"`+id+`"`) {
+		t.Fatalf("profiles = %d %s, want the safe store's profile", st, body)
+	}
+	if err := run.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(lb.String(), "store:") {
+		t.Fatalf("the safe start touched a store it cannot read:\n%s", lb.String())
+	}
+	if runtime.GOOS != "windows" {
+		os.Chmod(liveDir, 0o700)
+	}
+	after := snapshot(t, filepath.Join(r.dirs.Data, StoreDir), filepath.Join(r.dirs.Data, StoreDir, "safe"))
+	if fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatalf("the live store changed:\n%v\n%v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(r.dirs.Data, StoreDir, "safe", "profiles.zst")); err != nil {
+		t.Fatalf("the safe store is not in store/safe: %v", err)
+	}
+}
+
+func TestOpsRefusedWhileShuttingDown(t *testing.T) {
+	// Once closing starts nothing reaches the services: these return the
+	// shutting-down code before touching the engine, subsvc or settings.
+	b := &backend{closing: true, ops: context.Background()}
+	check := func(name string, err error) {
+		t.Helper()
+		var ae *api.Error
+		if !errors.As(err, &ae) || ae.Code != codeShuttingDown {
+			t.Errorf("%s = %v, want code %s", name, err, codeShuttingDown)
+		}
+	}
+	check("Disconnect", b.Disconnect(context.Background()))
+	check("RemoveSubscription", b.RemoveSubscription("sub-1"))
+	_, err := b.PutSettings(settings.Defaults())
+	check("PutSettings", err)
+	check("Connect", b.Connect(context.Background(), "prof-1"))
+	check("ResolveConflict", b.ResolveConflict(context.Background(), true))
+	_, _, err = b.AddSubscription(context.Background(), "https://sub.example.com/x", "")
+	check("AddSubscription", err)
+	_, err = b.UpdateSubscription(context.Background(), "sub-1")
+	check("UpdateSubscription", err)
+	_, err = b.SetDevTools(true)
+	check("SetDevTools", err)
+}
+
+func TestStateFileWriteRetried(t *testing.T) {
+	// A failed state-file write is retried on the clock, not left stale
+	// until the next engine event.
+	r := newRig(t)
+	id := r.seed()
+	clk := &manualClock{now: time.Unix(2_000_000, 0)}
+	r.opts.Clock = clk
+	var mu sync.Mutex
+	fails := 3
+	r.opts.hooks.writeState = func(path, v string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if v != "" && fails > 0 {
+			fails--
+			return errors.New("injected: sharing violation")
+		}
+		return writeAtomic(path, []byte(v))
+	}
+	run := r.start()
+	run.connect(id)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		b, _ := os.ReadFile(filepath.Join(r.dirs.Run, StateFileName))
+		if strings.HasPrefix(string(b), "http://127.0.0.1:") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state file = %q after the failed writes", b)
+		}
+		clk.Advance(stateRetry)
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	left := fails
+	mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d injected failures left; the URL got written without the retries", left)
+	}
+	if err := run.stop(); err != nil {
+		t.Fatal(err)
+	}
+}

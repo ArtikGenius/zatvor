@@ -3,9 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	mrand "math/rand"
@@ -23,12 +21,17 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/settings"
 	"github.com/ArtikGenius/zatvor/internal/store"
 	"github.com/ArtikGenius/zatvor/internal/subsvc"
+	"github.com/ArtikGenius/zatvor/internal/xrayrun"
 )
 
-// codeStopping: an operation arrived while the daemon shuts down.
-const codeStopping = "daemon_stopping"
+// codeShuttingDown: an operation arrived after the daemon began to shut
+// down; nothing reached the services.
+const codeShuttingDown = "shutting_down"
 
-var errStopping = &api.Error{Code: codeStopping, Message: "the daemon is stopping"}
+var errStopping = &api.Error{Code: codeShuttingDown, Message: "the daemon is shutting down"}
+
+// stateRetry is how soon a failed dev-tool state-file write is tried again.
+const stateRetry = time.Second
 
 // logLevels are the Xray log levels gen.Build accepts.
 var logLevels = map[string]bool{"debug": true, "info": true, "warning": true, "error": true, "none": true}
@@ -45,6 +48,8 @@ type backend struct {
 	dev          *devtools.Manager
 	fan          *fanout
 	onShow       func()
+	clock        xrayrun.Clock
+	putState     func(path, v string) error // writeState; tests inject failures
 
 	setMu sync.Mutex // guards st and the settings file
 	st    settings.Settings
@@ -68,7 +73,12 @@ func newBackend(d *daemon, settingsPath string, st settings.Settings, stateFile 
 	var seed [8]byte
 	_, _ = rand.Read(seed[:])
 	ops, stop := context.WithCancel(context.Background())
+	put := writeState
+	if d.opts.hooks.writeState != nil {
+		put = d.opts.hooks.writeState
+	}
 	return &backend{
+		clock: d.opts.Clock, putState: put,
 		logf: d.logf, settingsPath: settingsPath, stateFile: stateFile, dev: dev,
 		fan: newFanout(), onShow: d.opts.hooks.onShow, st: st,
 		rnd: mrand.New(mrand.NewSource(int64(binary.LittleEndian.Uint64(seed[:])))),
@@ -220,7 +230,14 @@ func (b *backend) Connect(ctx context.Context, profileID string) error {
 	return nil
 }
 
-func (b *backend) Disconnect(ctx context.Context) error { return b.eng.Disconnect(ctx) }
+func (b *backend) Disconnect(ctx context.Context) error {
+	ctx, done, err := b.enter(ctx)
+	defer done()
+	if err != nil {
+		return err
+	}
+	return b.eng.Disconnect(ctx)
+}
 
 func (b *backend) ResolveConflict(ctx context.Context, force bool) error {
 	ctx, done, err := b.enter(ctx)
@@ -251,7 +268,14 @@ func (b *backend) UpdateSubscription(ctx context.Context, id string) (profile.Di
 	return b.svc.Update(ctx, id, subsvc.User)
 }
 
-func (b *backend) RemoveSubscription(id string) error { return b.svc.Remove(id) }
+func (b *backend) RemoveSubscription(id string) error {
+	_, done, err := b.enter(context.Background())
+	defer done()
+	if err != nil {
+		return err
+	}
+	return b.svc.Remove(id)
+}
 
 func (b *backend) Settings() settings.Settings { return b.settings() }
 
@@ -264,6 +288,11 @@ func badRequest(format string, args ...any) error {
 // ports take effect on the next connect; DevTools takes effect through
 // SetDevTools or at the next start.
 func (b *backend) PutSettings(s settings.Settings) (settings.Settings, error) {
+	_, done, err := b.enter(context.Background())
+	defer done()
+	if err != nil {
+		return settings.Settings{}, err
+	}
 	b.setMu.Lock()
 	defer b.setMu.Unlock()
 	cur := b.st
@@ -400,15 +429,35 @@ func (b *backend) updateOnStart(ctx context.Context) {
 
 // pump is the single reader of the engine's and subsvc's events. It fans
 // them out, reports new warnings, and keeps the dev-tool state file (R23):
-// the proxy URL while connected, empty in every other phase.
+// the proxy URL while connected, empty in every other phase. A failed
+// write is tried again every stateRetry until it succeeds, so the file
+// never keeps a stale URL until the next engine event.
 func (b *backend) pump(ctx context.Context) {
 	states, subs := b.eng.Events(), b.svc.Events()
-	last := "" // the state file was emptied at start
+	last, want := "", "" // the state file was emptied at start
+	var retry <-chan time.Time
+	write := func() {
+		if want == last {
+			retry = nil
+			return
+		}
+		if err := b.putState(b.stateFile, want); err != nil {
+			if retry == nil {
+				b.logf("devtools: cannot write the state file; retrying")
+			}
+			retry = b.clock.After(stateRetry)
+			return
+		}
+		last, retry = want, nil
+	}
 	seen := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-retry:
+			retry = nil
+			write()
 		case e := <-subs:
 			b.fan.publish(api.SubscriptionEvent(e))
 		case s := <-states:
@@ -421,17 +470,13 @@ func (b *backend) pump(ctx context.Context) {
 				}
 			}
 			seen = cur
-			want := ""
+			want = ""
 			if s.Phase == engine.Connected && s.Ports.DevTools != 0 {
 				want = "http://127.0.0.1:" + strconv.Itoa(s.Ports.DevTools)
 				b.followDevPort(s.Ports.DevTools)
 			}
-			if want != last {
-				if err := writeState(b.stateFile, want); err != nil {
-					b.logf("devtools: cannot write the state file")
-					continue
-				}
-				last = want
+			if retry == nil {
+				write()
 			}
 		}
 	}
@@ -549,9 +594,4 @@ func (g *guardedStore) Close() {
 	g.mu.Lock()
 	g.closed = true
 	g.mu.Unlock()
-}
-
-func shortHash(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:8])
 }
