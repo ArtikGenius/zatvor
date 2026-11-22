@@ -870,6 +870,33 @@ func TestCheckThroughAPI(t *testing.T) {
 	}
 }
 
+// TestCheckServicesReachEngine: Options.CheckServices is the engine's list
+// of IP-check services (R6); left empty, the engine keeps its default.
+func TestCheckServicesReachEngine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		svcs []string
+	}{
+		{"set", []string{"http://127.0.0.1:1/ip", "http://127.0.0.1:2/ip"}},
+		{"empty", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.opts.CheckServices = tc.svcs
+			var got []string
+			fakes := r.opts.hooks.engine
+			r.opts.hooks.engine = func(d *engine.Deps) {
+				got = append([]string(nil), d.CheckServices...)
+				fakes(d)
+			}
+			r.start().stop()
+			if strings.Join(got, " ") != strings.Join(tc.svcs, " ") {
+				t.Fatalf("engine.Deps.CheckServices = %q, want %q", got, tc.svcs)
+			}
+		})
+	}
+}
+
 func TestDiagThroughAPI(t *testing.T) {
 	r := newRig(t)
 	id := r.seed()

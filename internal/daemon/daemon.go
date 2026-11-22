@@ -89,6 +89,11 @@ type Options struct {
 	Env func(string) string
 	// Log receives the daemon log. It never holds secrets. Nil: discarded.
 	Log io.Writer
+	// CheckServices are the IP-check URLs of the tunnel check (R6). Empty:
+	// the engine's default public services. zatvord never sets it; it
+	// exists for the live acceptance tests, which check against local echo
+	// services. No flag or environment variable reaches it.
+	CheckServices []string
 
 	hooks *hooks // tests only
 }
@@ -243,6 +248,9 @@ func (d *daemon) run(ctx context.Context) error {
 		Clock:        o.Clock,
 		Options:      b.buildOptions,
 		Safe:         o.Mode == safemode.Safe,
+	}
+	if len(o.CheckServices) > 0 {
+		ed.CheckServices = append([]string(nil), o.CheckServices...)
 	}
 	if o.hooks.engine != nil {
 		o.hooks.engine(&ed)
