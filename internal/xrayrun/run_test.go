@@ -415,3 +415,36 @@ func TestLateStopKeepsNewerStart(t *testing.T) {
 		t.Fatal("newer child orphaned: still alive after Stop")
 	}
 }
+
+// A Start whose ready check fails after the Runner was stopped and started
+// again must not stop the newer child.
+func TestFailedStartKeepsNewerStart(t *testing.T) {
+	r, _ := newRunner(t, "sleep", RealClock{})
+	entered, fail := make(chan struct{}), make(chan struct{})
+	first := make(chan error, 1)
+	go func() {
+		first <- r.Start(context.Background(), []byte("{}"), func(ctx context.Context) error {
+			close(entered)
+			<-fail
+			return context.DeadlineExceeded
+		})
+	}()
+	<-entered
+	if err := r.Stop(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background(), []byte("{}"), nil); err != nil {
+		t.Fatal(err)
+	}
+	pid := r.Pid()
+	close(fail)
+	if err := <-first; !errors.Is(err, ErrNotReady) {
+		t.Fatalf("first Start: %v, want ErrNotReady", err)
+	}
+	if got := r.Pid(); got != pid || !alive(pid) {
+		t.Fatalf("newer child stopped by the failed Start (Pid %d, want %d)", got, pid)
+	}
+	if err := r.Stop(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+}

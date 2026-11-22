@@ -119,8 +119,6 @@ type Runner struct {
 	cur      *os.Process
 	stopCh   chan struct{}
 	done     chan struct{} // closed when the supervisor loop has ended
-	firstEnd chan struct{} // closed on the first process exit
-	exitErr  error         // first crash error
 
 	// afterStopWait is a test hook run by Stop after the child has ended,
 	// before Stop clears the state.
@@ -176,9 +174,11 @@ func (r *Runner) Start(ctx context.Context, cfg []byte, ready ReadyCheck) error 
 		return ErrAlreadyStarted
 	}
 	r.gen++
+	gen := r.gen
 	r.running, r.stopping = true, false
-	r.stopCh, r.done, r.firstEnd = make(chan struct{}), make(chan struct{}), make(chan struct{})
+	r.stopCh, r.done = make(chan struct{}), make(chan struct{})
 	r.mu.Unlock()
+	firstCrash := make(chan error, 1) // this Start's first crash only
 
 	cfg = append([]byte(nil), cfg...)
 	w, err := r.spawn(cfg)
@@ -189,7 +189,7 @@ func (r *Runner) Start(ctx context.Context, cfg []byte, ready ReadyCheck) error 
 		r.mu.Unlock()
 		return err
 	}
-	go r.loop(cfg, w)
+	go r.loop(cfg, w, firstCrash)
 
 	if ready == nil {
 		return nil
@@ -205,18 +205,14 @@ func (r *Runner) Start(ctx context.Context, cfg []byte, ready ReadyCheck) error 
 			return nil
 		}
 		failure = fmt.Errorf("%w: %w", ErrNotReady, err)
-	case <-r.firstEnd:
-		failure = fmt.Errorf("%w (before it was ready)", r.lastExitErr())
+	case err := <-firstCrash:
+		failure = fmt.Errorf("%w (before it was ready)", err)
 	}
 	cancel()
-	_ = r.Stop(2 * time.Second)
+	// Stop this Start only: a Stop and a newer Start may have happened
+	// while the ready check ran.
+	_ = r.stop(2*time.Second, gen)
 	return failure
-}
-
-func (r *Runner) lastExitErr() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.exitErr
 }
 
 type waiter struct {
@@ -251,7 +247,7 @@ func (r *Runner) spawn(cfg []byte) (*waiter, error) {
 	return w, nil
 }
 
-func (r *Runner) loop(cfg []byte, w *waiter) {
+func (r *Runner) loop(cfg []byte, w *waiter, firstCrash chan<- error) {
 	defer close(r.done)
 	var crashes []time.Time
 	first := true
@@ -271,10 +267,7 @@ func (r *Runner) loop(cfg []byte, w *waiter) {
 		crashErr := r.crashError(err, w.out, cfg)
 		if first {
 			first = false
-			r.mu.Lock()
-			r.exitErr = crashErr
-			r.mu.Unlock()
-			close(r.firstEnd)
+			firstCrash <- crashErr
 		}
 		r.emit(Event{Kind: Exited, Err: crashErr})
 		now := r.clock.Now()
@@ -351,9 +344,12 @@ func (r *Runner) crashError(err error, out *ringBuf, cfg []byte) error {
 //
 // After a GaveUp event no child runs, but the Runner stays started: Start
 // returns ErrAlreadyStarted until Stop is called.
-func (r *Runner) Stop(timeout time.Duration) error {
+func (r *Runner) Stop(timeout time.Duration) error { return r.stop(timeout, 0) }
+
+// stop is Stop limited to generation only (0: whichever is current).
+func (r *Runner) stop(timeout time.Duration, only uint64) error {
 	r.mu.Lock()
-	if !r.running {
+	if !r.running || (only != 0 && r.gen != only) {
 		r.mu.Unlock()
 		return nil
 	}
