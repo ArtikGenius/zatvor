@@ -131,3 +131,10 @@ func collectSecrets(v any, plain bool, set map[string]bool) {
 		}
 	}
 }
+
+// MinimalEnv is the environment for every Xray child process: only
+// XRAY_LOCATION_ASSET (plus SystemRoot on Windows).
+func MinimalEnv(assetDir string) []string { return minimalEnv(assetDir) }
+
+// Scrub replaces every secret value of cfg found in msg with ***.
+func Scrub(msg string, cfg []byte) string { return scrub(msg, cfg) }
