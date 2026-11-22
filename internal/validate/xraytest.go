@@ -8,18 +8,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const maxMessage = 4096
 
-// secretKeys are JSON keys whose string values are secrets (or user names) and
-// must never appear in an error message.
-var secretKeys = setOf("id", "password", "pass", "privatekey", "publickey", "shortid", "shortids",
-	"presharedkey", "secretkey", "auth", "user", "username", "email")
+// plainKeys are JSON keys whose string values are known to be non-secret and
+// stay readable in error messages. Every other string leaf of the config
+// (at least minSecretLen long) is treated as a secret.
+var plainKeys = setOf("protocol", "tag", "network", "security", "type", "flow", "fingerprint", "alpn",
+	"loglevel", "domainstrategy", "outboundtag", "inboundtag", "balancertag", "listen", "mode")
+
+const minSecretLen = 6
 
 // XrayTest runs `xray run -test -config stdin:` on cfg with
 // XRAY_LOCATION_ASSET=assetDir in an otherwise minimal environment. The
@@ -60,15 +65,23 @@ func minimalEnv(assetDir string) []string {
 	return env
 }
 
-// scrub replaces every secret value found in cfg with ***. A cfg that is not
-// valid JSON yields msg unchanged.
+// scrub replaces every secret value found in cfg, and its variants Xray may
+// print, with ***. A cfg that is not valid JSON yields msg unchanged.
 func scrub(msg string, cfg []byte) string {
 	var v any
 	if json.Unmarshal(cfg, &v) != nil {
 		return msg
 	}
+	leaves := map[string]bool{}
+	collectSecrets(v, false, leaves)
 	set := map[string]bool{}
-	collectSecrets(v, false, set)
+	for s := range leaves {
+		for _, c := range variants(s) {
+			if c != "" {
+				set[c] = true
+			}
+		}
+	}
 	vals := make([]string, 0, len(set))
 	for s := range set {
 		vals = append(vals, s)
@@ -81,18 +94,39 @@ func scrub(msg string, cfg []byte) string {
 	return msg
 }
 
-func collectSecrets(v any, secret bool, set map[string]bool) {
+var uuidRe = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+
+// variants lists the forms of a secret that may show up in Xray output: as is,
+// lower/upper case, dash-stripped for UUIDs, and JSON/Go-escaped.
+func variants(s string) []string {
+	base := []string{s, strings.ToLower(s), strings.ToUpper(s)}
+	if uuidRe.MatchString(s) {
+		d := strings.ReplaceAll(s, "-", "")
+		base = append(base, d, strings.ToLower(d), strings.ToUpper(d))
+	}
+	out := append([]string(nil), base...)
+	for _, b := range base {
+		if j, err := json.Marshal(b); err == nil {
+			out = append(out, string(j[1:len(j)-1]))
+		}
+		q := strconv.Quote(b)
+		out = append(out, q[1:len(q)-1])
+	}
+	return out
+}
+
+func collectSecrets(v any, plain bool, set map[string]bool) {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, e := range x {
-			collectSecrets(e, secretKeys[strings.ToLower(k)], set)
+			collectSecrets(e, plainKeys[strings.ToLower(k)], set)
 		}
 	case []any:
 		for _, e := range x {
-			collectSecrets(e, secret, set)
+			collectSecrets(e, plain, set)
 		}
 	case string:
-		if secret && x != "" {
+		if !plain && len(x) >= minSecretLen {
 			set[x] = true
 		}
 	}
