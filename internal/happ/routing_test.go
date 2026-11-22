@@ -2,6 +2,7 @@ package happ
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -223,5 +224,64 @@ func TestGeoURLs(t *testing.T) {
 	ip, site := GeoURLs(linkProfile(t))
 	if !strings.HasSuffix(ip, "/geoip.dat") || !strings.HasSuffix(site, "/geosite.dat") {
 		t.Errorf("GeoURLs = %q, %q", ip, site)
+	}
+}
+
+func TestFakeDNSOn(t *testing.T) {
+	for _, v := range []string{"true", "TRUE", "1"} {
+		p := linkProfile(t)
+		p.FakeDNS = v
+		_, d, err := Translate(p, "proxy", "direct", "block")
+		if err != nil {
+			t.Fatal(err)
+		}
+		servers, _ := d.Get("servers")
+		first := servers.([]any)[0].(*ojson.Object)
+		if addr, _ := first.Get("address"); addr != "fakedns" {
+			t.Fatalf("%s: first server = %v", v, addr)
+		}
+		doms, _ := first.Get("domains")
+		if !reflect.DeepEqual(doms, toAnySlice(p.ProxySites)) {
+			t.Errorf("%s: domains = %v", v, doms)
+		}
+		if len(servers.([]any)) != 3 {
+			t.Errorf("%s: want 3 servers", v)
+		}
+		pool := FakeDNS(p)
+		if pool == nil {
+			t.Fatalf("%s: FakeDNS nil", v)
+		}
+		b, _ := ojson.Marshal(pool)
+		if got := marshalTree(t, pool); !reflect.DeepEqual(got, map[string]any{"ipPool": "198.18.0.0/15", "poolSize": json.Number("65535")}) {
+			t.Errorf("%s: pool = %s", v, b)
+		}
+	}
+}
+
+func toAnySlice(l []string) []any {
+	out := make([]any, len(l))
+	for i, s := range l {
+		out[i] = s
+	}
+	return out
+}
+
+func TestFakeDNSOff(t *testing.T) {
+	for _, v := range []string{"", "false", "0"} {
+		p := linkProfile(t)
+		p.FakeDNS = v
+		_, d, err := Translate(p, "proxy", "direct", "block")
+		if err != nil {
+			t.Fatal(err)
+		}
+		servers, _ := d.Get("servers")
+		for _, s := range servers.([]any) {
+			if addr, _ := s.(*ojson.Object).Get("address"); addr == "fakedns" {
+				t.Errorf("%q: unexpected fakedns server", v)
+			}
+		}
+		if FakeDNS(p) != nil {
+			t.Errorf("%q: FakeDNS should be nil", v)
+		}
 	}
 }

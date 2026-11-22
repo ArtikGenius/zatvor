@@ -135,6 +135,14 @@ func Translate(p Profile, proxyTag, directTag, blockTag string) (routing, dns *o
 	routing.Set("rules", rules)
 
 	servers := []any{}
+	if fakeDNSOn(p) {
+		f := &ojson.Object{}
+		f.Set("address", "fakedns")
+		if len(p.ProxySites) > 0 {
+			f.Set("domains", strs(p.ProxySites))
+		}
+		servers = append(servers, f)
+	}
 	if len(p.DirectSites) > 0 {
 		s := &ojson.Object{}
 		s.Set("address", dnsAddress(p.DomesticDNSType, p.DomesticDNSDomain, p.DomesticDNSIP, "8.8.8.8"))
@@ -165,8 +173,28 @@ func Translate(p Profile, proxyTag, directTag, blockTag string) (routing, dns *o
 	return routing, dns, nil
 }
 
-// routeOrder returns the dash-separated groups of s; unknown or repeated
-// segments are dropped and missing groups appended so no list is lost.
+// FakeDNS returns the Xray top-level fakedns pool when the profile enables
+// FakeDNS ("true", "1" or true, case-insensitive), nil otherwise. The caller
+// places it at the config root.
+func FakeDNS(p Profile) *ojson.Object {
+	if !fakeDNSOn(p) {
+		return nil
+	}
+	o := &ojson.Object{}
+	o.Set("ipPool", "198.18.0.0/15")
+	o.Set("poolSize", json.Number("65535"))
+	return o
+}
+
+func fakeDNSOn(p Profile) bool {
+	v := strings.ToLower(strings.TrimSpace(p.FakeDNS))
+	return v == "true" || v == "1"
+}
+
+// routeOrder returns the dash-separated groups of s, case-insensitively.
+// Fallback: an empty order means block-direct-proxy; unknown or repeated
+// segments are dropped, and any group the order omits is appended in
+// block-direct-proxy order so no rule list is silently lost.
 func routeOrder(s string) []string {
 	var order []string
 	seen := map[string]bool{}
