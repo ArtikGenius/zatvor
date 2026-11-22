@@ -1,0 +1,83 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "REPLACE_ME_ACCESS_LOG",
+    "error": "REPLACE_ME_ERROR_LOG"
+  },
+  "inbounds": [
+    {
+      "tag": "hy2-in",
+      "listen": "127.0.0.1",
+      "port": "REPLACE_ME_PORT",
+      "protocol": "hysteria",
+      "settings": {
+        "version": 2,
+        "clients": [
+          {
+            "auth": "REPLACE_ME_HY2_AUTH",
+            "email": "e2e-hy2"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "hysteria",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": [
+            "h3"
+          ],
+          "certificates": [
+            {
+              "certificate": "REPLACE_ME_CERT",
+              "key": "REPLACE_ME_KEY"
+            }
+          ]
+        },
+        "hysteriaSettings": {
+          "version": 2
+        },
+        "finalmask": {
+          "udp": [
+            {
+              "type": "salamander",
+              "settings": {
+                "password": "REPLACE_ME_SALAMANDER_PASSWORD"
+              }
+            },
+            {
+              "type": "noise",
+              "settings": {
+                "reset": 0,
+                "noise": [
+                  {
+                    "type": "exp",
+                    "packet": "<r 2><b 0x85800001000100000000076578616d706c6503636f6d0000010001c00c000100010000105a00045db8d70e>",
+                    "delay": "5-10"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "sendThrough": "REPLACE_ME_SEND_THROUGH",
+      "settings": {
+        "finalRules": [
+          {
+            "action": "allow",
+            "network": "tcp",
+            "ip": [
+              "127.0.0.1/32"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

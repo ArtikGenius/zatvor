@@ -1,0 +1,57 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "REPLACE_ME_ACCESS_LOG",
+    "error": "REPLACE_ME_ERROR_LOG"
+  },
+  "inbounds": [
+    {
+      "tag": "reality-in",
+      "listen": "127.0.0.1",
+      "port": "REPLACE_ME_PORT",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "REPLACE_ME_UUID",
+            "flow": "xtls-rprx-vision",
+            "email": "e2e-reality"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "target": "REPLACE_ME_TARGET",
+          "serverNames": [
+            "REPLACE_ME_REALITY_SNI"
+          ],
+          "privateKey": "REPLACE_ME_REALITY_PRIVATE_KEY",
+          "shortIds": [
+            "REPLACE_ME_SHORT_ID"
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "sendThrough": "REPLACE_ME_SEND_THROUGH",
+      "settings": {
+        "finalRules": [
+          {
+            "action": "allow",
+            "network": "tcp",
+            "ip": [
+              "127.0.0.1/32"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

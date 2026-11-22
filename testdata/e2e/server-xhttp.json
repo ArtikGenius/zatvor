@@ -1,0 +1,58 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "REPLACE_ME_ACCESS_LOG",
+    "error": "REPLACE_ME_ERROR_LOG"
+  },
+  "inbounds": [
+    {
+      "tag": "xhttp-in",
+      "listen": "127.0.0.1",
+      "port": "REPLACE_ME_PORT",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "REPLACE_ME_UUID",
+            "email": "e2e-xhttp"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificate": "REPLACE_ME_CERT",
+              "key": "REPLACE_ME_KEY"
+            }
+          ]
+        },
+        "xhttpSettings": {
+          "path": "REPLACE_ME_XHTTP_PATH",
+          "mode": "packet-up"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "sendThrough": "REPLACE_ME_SEND_THROUGH",
+      "settings": {
+        "finalRules": [
+          {
+            "action": "allow",
+            "network": "tcp",
+            "ip": [
+              "127.0.0.1/32"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
