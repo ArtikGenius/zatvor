@@ -73,3 +73,45 @@ func TestLatencyLocal(t *testing.T) {
 		t.Errorf("dead: %+v", res[1])
 	}
 }
+
+// TestLatencyFallbackPerOutbound: an outbound Xray rejects makes the shared
+// run fail to start; the per-outbound fallback still measures the others,
+// and only the invalid one carries an error.
+func TestLatencyFallbackPerOutbound(t *testing.T) {
+	bin := os.Getenv("ZATVOR_XRAY")
+	if bin == "" {
+		t.Skip("ZATVOR_XRAY is not set")
+	}
+	assets := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+
+	upPort := freePort(t)
+	cfg := fmt.Sprintf(`{"inbounds":[{"tag":"s","listen":"127.0.0.1","port":%d,"protocol":"socks","settings":{"auth":"noauth","udp":false}}],
+		"outbounds":[{"tag":"direct","protocol":"freedom"}]}`, upPort)
+	backend := New(bin, assets, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := backend.Start(ctx, []byte(cfg), DialReady(fmt.Sprintf("127.0.0.1:%d", upPort))); err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Stop(5 * time.Second)
+
+	outs := []*ojson.Object{
+		socksOutbound(t, "up1", upPort),
+		mustObj(t, `{"tag":"bad","protocol":"no-such-protocol"}`),
+		socksOutbound(t, "up2", upPort),
+	}
+	res := Latency(ctx, bin, assets, outs, srv.URL, 10*time.Second)
+	if len(res) != 3 {
+		t.Fatalf("got %d results", len(res))
+	}
+	for _, i := range []int{0, 2} {
+		if res[i].Err != nil || res[i].RTT <= 0 {
+			t.Errorf("%s: %+v", res[i].Tag, res[i])
+		}
+	}
+	if res[1].Tag != "bad" || res[1].Err == nil || res[1].RTT != 0 {
+		t.Errorf("bad: %+v", res[1])
+	}
+}

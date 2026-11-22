@@ -35,7 +35,7 @@ func (RealClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 type EventKind int
 
 const (
-	Started    EventKind = iota // process launched
+	Started    EventKind = iota // process launched (Err: see Event)
 	Exited                      // process ended (Err is set for a crash)
 	Restarting                  // a crash restart is scheduled after Delay
 	GaveUp                      // too many crashes; no more restarts until Stop, then Start
@@ -45,7 +45,10 @@ func (k EventKind) String() string {
 	return [...]string{"Started", "Exited", "Restarting", "GaveUp"}[k]
 }
 
-// Event is a supervisor notification.
+// Event is a supervisor notification. A Started event has Err set when the
+// child runs but could not be tied to this process's lifetime (on Windows,
+// a job object with kill-on-close, so Xray dies with the daemon even when
+// the daemon is killed); the child is not stopped for it.
 type Event struct {
 	Kind  EventKind
 	Err   error
@@ -241,9 +244,11 @@ func (r *Runner) spawn(cfg []byte) (*waiter, error) {
 		return nil, fmt.Errorf("%w: %s", ErrSpawn, validate.Scrub(err.Error(), cfg))
 	}
 	r.cur = cmd.Process
+	// Before Wait starts: see assignJob.
+	jobErr := assignJob(cmd.Process)
 	w := &waiter{cmd: cmd, out: out, end: make(chan error, 1)}
 	go func() { w.end <- cmd.Wait() }()
-	r.emit(Event{Kind: Started})
+	r.emit(Event{Kind: Started, Err: jobErr})
 	return w, nil
 }
 

@@ -45,3 +45,6 @@ func listenLoopback(t *testing.T) net.Listener {
 	}
 	return ln
 }
+
+// helperMain has no helper modes outside Windows.
+func helperMain() (int, bool) { return 0, false }

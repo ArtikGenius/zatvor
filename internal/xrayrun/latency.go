@@ -27,13 +27,19 @@ type LatencyResult struct {
 	Err error
 }
 
+// fallbackWorkers bounds the temporary Xray processes of the per-outbound
+// fallback.
+const fallbackWorkers = 4
+
 // Latency measures, through the Xray core and not ICMP, how long an HTTP GET
 // of url takes via each outbound. One temporary Xray runs with a socks
 // inbound on 127.0.0.1 (random per-run credentials) per outbound, routed to
 // that outbound only. RTT is the time until the response headers arrive; any
-// HTTP status counts as reachable. If the temporary Xray cannot start (for
-// instance because one outbound is invalid), every result carries that
-// error. The temporary Xray is stopped on every path.
+// HTTP status counts as reachable. If that shared Xray cannot start (for
+// instance because one outbound is invalid), each outbound is measured with
+// its own temporary Xray (at most four at a time), so only the outbounds
+// that fail on their own carry an error. Every temporary Xray is stopped on
+// every path.
 func Latency(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.Object, url string, timeout time.Duration) []LatencyResult {
 	res := make([]LatencyResult, len(outbounds))
 	for i, o := range outbounds {
@@ -45,21 +51,49 @@ func Latency(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 	if url == "" {
 		url = DefaultLatencyURL
 	}
-	failAll := func(err error) []LatencyResult {
+	m, err := measure(ctx, xrayPath, assetDir, outbounds, url, timeout)
+	if err == nil || len(outbounds) == 1 {
 		for i := range res {
-			res[i].Err = err
+			if err != nil {
+				res[i].Err = err
+			} else {
+				res[i].RTT, res[i].Err = m[i].RTT, m[i].Err
+			}
 		}
 		return res
 	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, fallbackWorkers)
+	for i, o := range outbounds {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			one, err := measure(ctx, xrayPath, assetDir, []*ojson.Object{o}, url, timeout)
+			if err != nil {
+				res[i].Err = err
+				return
+			}
+			res[i].RTT, res[i].Err = one[0].RTT, one[0].Err
+		}()
+	}
+	wg.Wait()
+	return res
+}
 
+// measure runs one temporary Xray for outbounds and probes each of them.
+// The error is set when that Xray could not be set up or started; the
+// per-outbound results are valid only without it.
+func measure(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.Object, url string, timeout time.Duration) ([]LatencyResult, error) {
 	ports, err := freePorts(len(outbounds))
 	if err != nil {
-		return failAll(err)
+		return nil, err
 	}
 	user, pass := randHex(12), randHex(16)
 	cfg, err := latencyConfig(outbounds, ports, user, pass)
 	if err != nil {
-		return failAll(err)
+		return nil, err
 	}
 
 	r := New(xrayPath, assetDir, nil)
@@ -76,10 +110,11 @@ func Latency(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 		return nil
 	}
 	if err := r.Start(ctx, cfg, ready); err != nil {
-		return failAll(err)
+		return nil, err
 	}
 	defer r.Stop(3 * time.Second)
 
+	res := make([]LatencyResult, len(outbounds))
 	var wg sync.WaitGroup
 	for i := range outbounds {
 		wg.Add(1)
@@ -89,7 +124,7 @@ func Latency(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 		}(i)
 	}
 	wg.Wait()
-	return res
+	return res, nil
 }
 
 func probe(ctx context.Context, socksAddr, user, pass, url string, timeout time.Duration) (time.Duration, error) {

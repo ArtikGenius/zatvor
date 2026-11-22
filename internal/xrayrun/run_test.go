@@ -17,10 +17,14 @@ import (
 
 // TestMain turns the test binary into a fake "xray": when it is started as
 // `<bin> run -config stdin:` it reads the behaviour from the file "mode" in
-// XRAY_LOCATION_ASSET instead of running tests.
+// XRAY_LOCATION_ASSET instead of running tests. helperMain adds the
+// per-OS helper modes (the Windows job-object parent).
 func TestMain(m *testing.M) {
 	if len(os.Args) >= 4 && os.Args[1] == "run" && os.Args[2] == "-config" && os.Args[3] == "stdin:" {
 		os.Exit(fakeXray())
+	}
+	if code, ok := helperMain(); ok {
+		os.Exit(code)
 	}
 	os.Exit(m.Run())
 }

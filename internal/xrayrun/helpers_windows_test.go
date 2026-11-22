@@ -37,3 +37,15 @@ func listenLoopback(t *testing.T) net.Listener {
 	}
 	return ln
 }
+
+// jobParentArg starts the test binary as the job-object test's parent: it
+// runs a Runner whose "xray" is this binary in fake mode, writes the child's
+// PID to <dir>/child.pid and waits for EOF on stdin.
+const jobParentArg = "zatvor-xrayrun-jobparent"
+
+func helperMain() (int, bool) {
+	if len(os.Args) < 3 || os.Args[1] != jobParentArg {
+		return 0, false
+	}
+	return jobParent(os.Args[2]), true
+}
