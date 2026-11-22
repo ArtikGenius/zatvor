@@ -1,6 +1,7 @@
 # 0009: Local API
 
-Status: accepted, 2026-11-19 (spec §4.5). Implementation is stage 1.
+Status: accepted, 2026-11-19 (spec §4.5). Implemented in stage 1b (`internal/api`, `internal/instance`);
+transport settled 2026-11-22: HTTP only in 1b, named pipe reconsidered in 1c.
 
 ## Context
 
@@ -23,8 +24,46 @@ users.
 - `Host` must be `127.0.0.1:<port>`; `Origin` absent or our own (blocks rebinding and cross-origin pages).
 - JSON bodies; long-poll or SSE for state changes.
 - Used by the UI, the CLI and later the browser extension.
-- On Windows, prefer a named pipe for CLI and UI when the framework supports it; to be settled when the
-  UI is wired in stage 1 (the Tauri prototype in [0005](0005-ui-framework.md) did not exercise it).
+- Transport, settled for 1b: **HTTP only.** 1b has no UI, and the CLI uses the same HTTP
+  API as everything else, so one transport and one set of checks is tested. A named pipe for the UI and
+  CLI is reconsidered in 1c, when the UI is wired (the Tauri prototype in [0005](0005-ui-framework.md)
+  did not exercise it).
+
+## Implementation (stage 1b)
+
+- **Listener.** `127.0.0.1` only (tcp4). The persisted port (`Settings.Ports.API`) is tried first and
+  `127.0.0.1:0` is the fallback; the daemon persists the bound port. On Windows the socket has
+  `SO_EXCLUSIVEADDRUSE`, so another socket cannot bind the port with `SO_REUSEADDR` and receive the
+  clients' token.
+- **Discovery.** `Run/token` (32 random bytes, 64 lowercase hex) is written first, then `Run/api.json`
+  = `{"version":1,"port":N,"pid":P}`, so a reader that finds `api.json` always finds the token. Both
+  are written atomically (temp file, fsync, rename) and restricted to the user before the rename (a
+  protected single-ACE DACL on Windows, 0600 elsewhere). Stop removes `api.json` only if its pid and
+  port are still ours and the token only if it is still ours (K34).
+- **Checks on every request**, failing with 403 `{"code":"forbidden","message":"forbidden"}` and no
+  detail: `Host` equals the exact string `127.0.0.1:<port>`; `Origin` is absent, empty or `null`
+  (1c adds the UI's own origin); `Authorization: Bearer <token>` matches in constant time. A CORS
+  preflight from a page therefore fails, and no CORS headers are ever sent.
+- **Bodies** are capped at 64 KiB (413 `body_too_large`), must be one JSON value, and every response
+  is JSON with `Cache-Control: no-store` and `nosniff`.
+- **Errors** are `{"code","message"}`. A domain error (`engine`, `subsvc`, `devtools`, `api.Error`,
+  also when wrapped) gives its own code and message; the text of a wrapped error, which can hold a URL
+  or a path, never reaches a body. Anything else is `{"code":"internal","message":"internal error"}`.
+  Status: 400 bad input (`bad_request`, `invalid_url`, `settings_empty`), 403 `forbidden`, 404
+  `not_found`, 409 conflicts (`proxy_conflict`, `no_conflict`, `superseded`, `devtools_conflict`,
+  `devtools_changed_by_other`), 413, 500 `internal`, and 422 for every other domain failure.
+- **Routes v1:** `GET status`, `GET events`, `GET profiles`, `POST connect {profile}`,
+  `POST disconnect`, `GET subscriptions`, `POST subscriptions {url, ua}`,
+  `POST subscriptions/{id}/update`, `DELETE subscriptions/{id}`, `PUT settings`, `POST devtools {on}`,
+  `POST proxy/resolve-conflict {force}`, `POST show`; `GET diag` comes with the diagnostics bundle.
+  Listings carry no secrets: a subscription shows its URL's host only and a profile no address,
+  credential or link.
+- **Events.** `GET /v1/events` is SSE with the events `state`, `subscription` and `warning`; the
+  current state is sent first. The daemon is the only reader of the engine's and subsvc's event
+  channels and fans them out to the API.
+- **Single instance.** Windows: the named mutex `Local\Zatvor-<user SID>`, held until exit; elsewhere
+  `flock` on `Run/instance.lock`. A second launch POSTs `/v1/show` with the token (3 s timeout, no
+  proxy) and exits (K43).
 
 ## Consequences
 
