@@ -2,6 +2,8 @@ package store
 
 import (
 	"bytes"
+	"crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -288,5 +290,98 @@ func TestSaveKeepsGoodBakWhenMainCorrupt(t *testing.T) {
 	got, err := open(t, dir2, filepath.Join(dir2, "key")).Load()
 	if err != nil || got[0].Title != "T" {
 		t.Fatalf(".bak lost the good backup: %v %v", got, err)
+	}
+}
+
+// writeSealed writes a store file with the given format byte and plaintext,
+// sealed with s's key.
+func writeSealed(t *testing.T, s *Store, ver byte, plain []byte) {
+	t.Helper()
+	out := append(append([]byte(nil), magic...), ver)
+	nonce := make([]byte, nonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	out = append(out, nonce...)
+	out = s.aead.Seal(out, nonce, plain, out[:headerLen])
+	if err := os.WriteFile(s.path(), out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 1c tells a wrong key, a damaged file, a foreign file and a newer format
+// apart (only the first two offer the .bak restore).
+func TestLoadErrorsTyped(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, filepath.Join(dir, "key"))
+	if err := s.Save(sample(t)); err != nil {
+		t.Fatal(err)
+	}
+	good, _ := os.ReadFile(s.path())
+	wrong := open(t, dir, filepath.Join(t.TempDir(), "otherkey"))
+	if _, err := wrong.Load(); !errors.Is(err, ErrWrongKey) {
+		t.Errorf("wrong key: %v, want ErrWrongKey", err)
+	}
+	cases := []struct {
+		name string
+		data func() []byte
+		want error
+	}{
+		{"truncated", func() []byte { return []byte("ZTVS") }, ErrCorrupt},
+		{"empty", func() []byte { return nil }, ErrCorrupt},
+		{"short foreign", func() []byte { return []byte("{}") }, ErrFormat},
+		{"flipped byte", func() []byte {
+			b := append([]byte(nil), good...)
+			b[len(b)-1] ^= 1
+			return b
+		}, ErrWrongKey},
+		{"foreign", func() []byte { return []byte(`{"subscriptions":[]}` + strings.Repeat(" ", 64)) }, ErrFormat},
+		{"newer format", func() []byte {
+			b := append([]byte(nil), good...)
+			b[len(magic)] = 9
+			return b
+		}, ErrVersion},
+	}
+	for _, c := range cases {
+		if err := os.WriteFile(s.path(), c.data(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Load(); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, err, c.want)
+		}
+	}
+	writeSealed(t, s, formatVer, []byte("not json"))
+	if _, err := s.Load(); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("bad JSON: %v, want ErrCorrupt", err)
+	}
+	writeSealed(t, s, formatVer, []byte(`{"version":99,"subscriptions":[]}`))
+	if _, err := s.Load(); !errors.Is(err, ErrVersion) {
+		t.Errorf("newer document: %v, want ErrVersion", err)
+	}
+}
+
+func TestKeyErrorsTyped(t *testing.T) {
+	dir := t.TempDir()
+	short := filepath.Join(dir, "short")
+	if err := os.WriteFile(short, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FileKey(short).Key(); !errors.Is(err, ErrKey) {
+		t.Errorf("short key file: %v, want ErrKey", err)
+	}
+	if _, err := Open(dir, FileKey(short)); !errors.Is(err, ErrKey) {
+		t.Errorf("Open with short key file: %v, want ErrKey", err)
+	}
+	if _, err := Open(dir, badKey{}); !errors.Is(err, ErrKey) {
+		t.Errorf("Open with 16-byte key: %v, want ErrKey", err)
+	}
+	if runtime.GOOS != "windows" {
+		wide := filepath.Join(dir, "wide")
+		if err := os.WriteFile(wide, make([]byte, KeySize), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := FileKey(wide).Key(); !errors.Is(err, ErrKey) {
+			t.Errorf("wide key file: %v, want ErrKey", err)
+		}
 	}
 }

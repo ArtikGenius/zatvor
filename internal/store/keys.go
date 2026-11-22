@@ -49,16 +49,16 @@ func (f fileKey) read() ([]byte, error) {
 			return nil, err
 		}
 		if fi.Mode().Perm()&0o077 != 0 {
-			return nil, fmt.Errorf("store: key file %s has mode %v, want 0600", f.path, fi.Mode().Perm())
+			return nil, fmt.Errorf("%w: key file %s has mode %v, want 0600", ErrKey, f.path, fi.Mode().Perm())
 		}
 	}
 	buf := make([]byte, KeySize+1)
 	n, err := file.Read(buf)
 	if err != nil && n == 0 {
-		return nil, fmt.Errorf("store: key file %s is empty", f.path)
+		return nil, fmt.Errorf("%w: key file %s is empty", ErrKey, f.path)
 	}
 	if n != KeySize {
-		return nil, fmt.Errorf("store: key file %s must hold exactly %d bytes", f.path, KeySize)
+		return nil, fmt.Errorf("%w: key file %s must hold exactly %d bytes", ErrKey, f.path, KeySize)
 	}
 	return buf[:n], nil
 }

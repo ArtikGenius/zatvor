@@ -38,6 +38,25 @@ const (
 
 var magic = []byte("ZTVS")
 
+// Errors Load, Open and FileKey return, for errors.Is. Messages never hold
+// store contents.
+var (
+	// ErrKey: the key provider failed or gave a key that is not 32 bytes
+	// (a key file with the wrong size or wide permissions).
+	ErrKey = errors.New("store: key unavailable")
+	// ErrWrongKey: the file does not authenticate with this key. Either the
+	// key changed or the ciphertext was damaged; GCM cannot tell which.
+	ErrWrongKey = errors.New("store: cannot decrypt (wrong key or damaged file)")
+	// ErrCorrupt: the file is a store file but truncated, or it decrypted
+	// to content that is not a store document.
+	ErrCorrupt = errors.New("store: file is damaged")
+	// ErrFormat: the file is not a Zatvor store file.
+	ErrFormat = errors.New("store: not a Zatvor store file")
+	// ErrVersion: a store file or document version this build does not know
+	// (written by a newer Zatvor).
+	ErrVersion = errors.New("store: unsupported store version")
+)
+
 // Store is the encrypted profile store in one directory.
 type Store struct {
 	dir  string
@@ -57,10 +76,13 @@ type document struct {
 func Open(dir string, kp KeyProvider) (*Store, error) {
 	key, err := kp.Key()
 	if err != nil {
-		return nil, fmt.Errorf("store: key: %w", err)
+		if errors.Is(err, ErrKey) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %w", ErrKey, err)
 	}
 	if len(key) != KeySize {
-		return nil, fmt.Errorf("store: key is %d bytes, want %d", len(key), KeySize)
+		return nil, fmt.Errorf("%w: key is %d bytes, want %d", ErrKey, len(key), KeySize)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -85,8 +107,10 @@ func Open(dir string, kp KeyProvider) (*Store, error) {
 func (s *Store) path() string { return filepath.Join(s.dir, fileName) }
 
 // Load returns the saved subscriptions; a missing file is an empty store.
-// A wrong key, corruption or an unknown version is an error. It does not
-// fall back to ".bak" and never touches it.
+// A wrong key or damaged ciphertext is ErrWrongKey, a truncated file or bad
+// document ErrCorrupt, a foreign file ErrFormat and an unknown version
+// ErrVersion; other errors are I/O errors. It does not fall back to ".bak"
+// and never touches it.
 func (s *Store) Load() ([]profile.Subscription, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -97,24 +121,26 @@ func (s *Store) Load() ([]profile.Subscription, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(data) < headerLen+nonceLen+s.aead.Overhead() || !bytes.Equal(data[:len(magic)], magic) {
-		return nil, errors.New("store: not a Zatvor store file")
-	}
-	if data[len(magic)] != formatVer {
-		return nil, fmt.Errorf("store: unsupported format version %d", data[len(magic)])
+	switch {
+	case !bytes.HasPrefix(data, magic) && !bytes.HasPrefix(magic, data):
+		return nil, ErrFormat // a prefix of the magic is a truncated store file
+	case len(data) > len(magic) && data[len(magic)] != formatVer:
+		return nil, fmt.Errorf("%w: format %d", ErrVersion, data[len(magic)])
+	case len(data) < headerLen+nonceLen+s.aead.Overhead():
+		return nil, fmt.Errorf("%w: truncated", ErrCorrupt)
 	}
 	header := data[:headerLen]
 	nonce := data[headerLen : headerLen+nonceLen]
 	plain, err := s.aead.Open(nil, nonce, data[headerLen+nonceLen:], header)
 	if err != nil {
-		return nil, errors.New("store: cannot decrypt (wrong key or corrupted file)")
+		return nil, ErrWrongKey
 	}
 	var doc document
 	if err := json.Unmarshal(plain, &doc); err != nil {
-		return nil, errors.New("store: decrypted content is not valid")
+		return nil, fmt.Errorf("%w: decrypted content is not a store document", ErrCorrupt)
 	}
 	if doc.Version != docVersion {
-		return nil, fmt.Errorf("store: unsupported document version %d", doc.Version)
+		return nil, fmt.Errorf("%w: document %d", ErrVersion, doc.Version)
 	}
 	return doc.Subscriptions, nil
 }
