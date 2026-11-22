@@ -1,0 +1,66 @@
+// Package profile holds the user's subscriptions and the profiles (proxy
+// servers) inside them, and merges a freshly fetched subscription into the
+// stored one without losing the user's selection.
+package profile
+
+import (
+	"time"
+
+	"github.com/ArtikGenius/zatvor/internal/happ"
+	"github.com/ArtikGenius/zatvor/internal/link"
+	"github.com/ArtikGenius/zatvor/internal/ojson"
+	"github.com/ArtikGenius/zatvor/internal/subhdr"
+)
+
+// SourceKind says where a profile's routing rules come from.
+type SourceKind string
+
+const (
+	// SourceProvider uses the subscription's routing header (links only).
+	SourceProvider SourceKind = "provider"
+	// SourcePreset uses one of Zatvor's built-in presets.
+	SourcePreset SourceKind = "preset"
+	// SourceHapp uses a Happ routing profile the user imported.
+	SourceHapp SourceKind = "happ"
+)
+
+// Preset is a built-in routing preset.
+type Preset string
+
+const (
+	PresetAllProxy     Preset = "all-proxy"
+	PresetAllExceptRU  Preset = "all-except-ru"
+	PresetSelectedOnly Preset = "selected-only"
+)
+
+// Source is a profile's routing source. Happ is set for SourceHapp and, for
+// SourceProvider, points at the subscription's ProviderRouting.
+type Source struct {
+	Kind   SourceKind
+	Preset Preset
+	Happ   *happ.Profile
+}
+
+// Profile is one proxy server: a share-link Node or a provider JSON Config.
+// Exactly one of Node and Config is set.
+type Profile struct {
+	ID             string
+	Name           string
+	SubscriptionID string
+	Node           *link.Node
+	Config         *ojson.Object
+	RoutingSource  Source
+	Disabled       bool
+}
+
+// Subscription is a provider URL and the profiles last fetched from it.
+// URL is a secret: it is stored only in the encrypted store and never put in
+// errors or logs.
+type Subscription struct {
+	ID, URL, Title, UA string
+	SendDevice         bool
+	Info               subhdr.Info
+	ProviderRouting    *happ.Profile
+	LastGood           time.Time
+	Profiles           []Profile
+}

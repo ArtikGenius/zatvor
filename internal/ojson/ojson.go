@@ -229,3 +229,35 @@ func (o *Object) Len() int { return len(o.members) }
 
 // At returns the i-th member in source order, 0 <= i < Len.
 func (o *Object) At(i int) (string, any) { return o.members[i].key, o.members[i].val }
+
+// MarshalJSON writes the object compactly with its keys in source order, so an
+// Object can sit inside any encoding/json value.
+func (o *Object) MarshalJSON() ([]byte, error) {
+	if o == nil {
+		return []byte("null"), nil
+	}
+	b, err := Marshal(o)
+	if err != nil {
+		return nil, err
+	}
+	var c bytes.Buffer
+	if err := json.Compact(&c, b); err != nil {
+		return nil, err
+	}
+	return c.Bytes(), nil
+}
+
+// UnmarshalJSON replaces o with the parsed object, keeping key order and
+// numbers as json.Number.
+func (o *Object) UnmarshalJSON(data []byte) error {
+	v, err := Parse(data)
+	if err != nil {
+		return err
+	}
+	parsed, ok := v.(*Object)
+	if !ok {
+		return errors.New("json: value is not an object")
+	}
+	o.members = parsed.members
+	return nil
+}

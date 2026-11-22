@@ -1,6 +1,7 @@
 package ojson
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -63,5 +64,36 @@ func TestOrderedKeys(t *testing.T) {
 	}
 	if k, _ := o.At(1); k != "a" {
 		t.Fatalf("At(1) key = %s", k)
+	}
+}
+
+func TestObjectJSONRoundTrip(t *testing.T) {
+	type holder struct {
+		Cfg  *Object `json:"cfg"`
+		Null *Object `json:"null"`
+	}
+	in := `{"cfg":{"z":1,"a":{"y":[true,null,"x"],"b":12345678901234567890},"m":1.50},"null":null}`
+	var h holder
+	if err := json.Unmarshal([]byte(in), &h); err != nil {
+		t.Fatal(err)
+	}
+	if h.Null != nil {
+		t.Fatal("null member should stay nil")
+	}
+	if got := strings.Join(h.Cfg.Keys(), ","); got != "z,a,m" {
+		t.Fatalf("key order = %s", got)
+	}
+	if v, _ := h.Cfg.Get("z"); v != json.Number("1") {
+		t.Fatalf("z = %#v, want json.Number", v)
+	}
+	out, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round trip:\n%s\nwant:\n%s", out, in)
+	}
+	if err := json.Unmarshal([]byte(`{"cfg":[1]}`), &h); err == nil {
+		t.Fatal("array into Object must fail")
 	}
 }
