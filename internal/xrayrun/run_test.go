@@ -3,6 +3,7 @@ package xrayrun
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -308,5 +309,109 @@ func TestStartSpawnFailureReleasesStop(t *testing.T) {
 	case <-stopped:
 	case <-time.After(10 * time.Second):
 		t.Fatal("concurrent Stop blocked forever after spawn failure")
+	}
+}
+
+func TestErrorsTyped(t *testing.T) {
+	r, _ := newRunner(t, "sleep", RealClock{})
+	if err := r.Start(context.Background(), []byte("{}"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background(), []byte("{}"), nil); !errors.Is(err, ErrAlreadyStarted) {
+		t.Errorf("second Start: %v, want ErrAlreadyStarted", err)
+	}
+	_ = r.Stop(5 * time.Second)
+
+	notReady := func(ctx context.Context) error { return context.DeadlineExceeded }
+	if err := r.Start(context.Background(), []byte("{}"), notReady); !errors.Is(err, ErrNotReady) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("not ready: %v, want ErrNotReady wrapping the cause", err)
+	}
+
+	missing := New(filepath.Join(t.TempDir(), "no-such-xray"), t.TempDir(), RealClock{})
+	if err := missing.Start(context.Background(), []byte("{}"), nil); !errors.Is(err, ErrSpawn) {
+		t.Errorf("missing binary: %v, want ErrSpawn", err)
+	}
+
+	c, _ := newRunner(t, "crash", newFakeClock())
+	err := c.Start(context.Background(), []byte("{}"), func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+	if !errors.Is(err, ErrExited) {
+		t.Errorf("exit before ready: %v, want ErrExited", err)
+	}
+}
+
+// After GaveUp the Runner stays started until Stop: Start is refused, Stop
+// returns at once and a later Start works.
+func TestGaveUpNeedsStop(t *testing.T) {
+	clk := newFakeClock()
+	r, dir := newRunner(t, "crash", clk)
+	if err := r.Start(context.Background(), []byte("{}"), nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < crashLimit-1; i++ {
+		ev := next(t, r, Exited)
+		if !errors.Is(ev.Err, ErrExited) {
+			t.Fatalf("Exited.Err = %v, want ErrExited", ev.Err)
+		}
+		clk.Advance(next(t, r, Restarting).Delay)
+	}
+	if gu := next(t, r, GaveUp); !errors.Is(gu.Err, ErrGaveUp) || !errors.Is(gu.Err, ErrExited) {
+		t.Fatalf("GaveUp.Err = %v, want ErrGaveUp wrapping ErrExited", gu.Err)
+	}
+	if err := r.Start(context.Background(), []byte("{}"), nil); !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("Start after GaveUp: %v, want ErrAlreadyStarted", err)
+	}
+	if err := r.Stop(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mode"), []byte("sleep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background(), []byte("{}"), nil); err != nil {
+		t.Fatalf("Start after Stop: %v", err)
+	}
+	if err := r.Stop(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A Stop that finishes after a newer Start must not clear that Start's
+// state, or its Xray is orphaned (Pid 0, Stop a no-op).
+func TestLateStopKeepsNewerStart(t *testing.T) {
+	r, _ := newRunner(t, "sleep", RealClock{})
+	if err := r.Start(context.Background(), []byte("{}"), nil); err != nil {
+		t.Fatal(err)
+	}
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	r.afterStopWait = func() {
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			close(reached)
+			<-release
+		}
+	}
+	late := make(chan error, 1)
+	go func() { late <- r.Stop(5 * time.Second) }()
+	<-reached // the late Stop has seen the first child end
+	if err := r.Stop(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background(), []byte("{}"), nil); err != nil {
+		t.Fatal(err)
+	}
+	pid := r.Pid()
+	close(release)
+	if err := <-late; err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Pid(); got != pid || pid == 0 {
+		t.Fatalf("Pid after late Stop = %d, want %d", got, pid)
+	}
+	if err := r.Stop(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if alive(pid) {
+		t.Fatal("newer child orphaned: still alive after Stop")
 	}
 }

@@ -38,7 +38,7 @@ const (
 	Started    EventKind = iota // process launched
 	Exited                      // process ended (Err is set for a crash)
 	Restarting                  // a crash restart is scheduled after Delay
-	GaveUp                      // too many crashes; no more restarts
+	GaveUp                      // too many crashes; no more restarts until Stop, then Start
 )
 
 func (k EventKind) String() string {
@@ -88,6 +88,24 @@ func DialReady(addr string) ReadyCheck {
 	}
 }
 
+// Errors from Start and in Events, for errors.Is.
+var (
+	// ErrAlreadyStarted: Start on a Runner that is started (also after
+	// GaveUp, until Stop).
+	ErrAlreadyStarted = errors.New("xrayrun: already started")
+	// ErrStopping: a launch raced a Stop.
+	ErrStopping = errors.New("xrayrun: stopping")
+	// ErrSpawn: the Xray binary could not be launched.
+	ErrSpawn = errors.New("xrayrun: cannot start xray")
+	// ErrNotReady: the ready check failed; the cause is wrapped too.
+	ErrNotReady = errors.New("xrayrun: xray not ready")
+	// ErrExited: Xray exited on its own (Exited events, and Start when it
+	// exits before it is ready).
+	ErrExited = errors.New("xrayrun: xray exited")
+	// ErrGaveUp: too many crashes; it wraps the last crash error.
+	ErrGaveUp = errors.New("xrayrun: too many crashes")
+)
+
 // Runner starts Xray with the config on stdin and restarts it after crashes.
 type Runner struct {
 	xrayPath, assetDir string
@@ -97,11 +115,16 @@ type Runner struct {
 	mu       sync.Mutex
 	running  bool // Start succeeded and Stop has not completed
 	stopping bool
+	gen      uint64 // bumped by each Start; Stop clears only its own
 	cur      *os.Process
 	stopCh   chan struct{}
 	done     chan struct{} // closed when the supervisor loop has ended
 	firstEnd chan struct{} // closed on the first process exit
 	exitErr  error         // first crash error
+
+	// afterStopWait is a test hook run by Stop after the child has ended,
+	// before Stop clears the state.
+	afterStopWait func()
 }
 
 // New creates a Runner. A nil clock means the wall clock.
@@ -150,8 +173,9 @@ func (r *Runner) Start(ctx context.Context, cfg []byte, ready ReadyCheck) error 
 	r.mu.Lock()
 	if r.running {
 		r.mu.Unlock()
-		return errors.New("xrayrun: already started")
+		return ErrAlreadyStarted
 	}
+	r.gen++
 	r.running, r.stopping = true, false
 	r.stopCh, r.done, r.firstEnd = make(chan struct{}), make(chan struct{}), make(chan struct{})
 	r.mu.Unlock()
@@ -180,9 +204,9 @@ func (r *Runner) Start(ctx context.Context, cfg []byte, ready ReadyCheck) error 
 		if err == nil {
 			return nil
 		}
-		failure = fmt.Errorf("xray not ready: %w", err)
+		failure = fmt.Errorf("%w: %w", ErrNotReady, err)
 	case <-r.firstEnd:
-		failure = fmt.Errorf("xray exited before it was ready: %w", r.lastExitErr())
+		failure = fmt.Errorf("%w (before it was ready)", r.lastExitErr())
 	}
 	cancel()
 	_ = r.Stop(2 * time.Second)
@@ -205,7 +229,7 @@ func (r *Runner) spawn(cfg []byte) (*waiter, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopping {
-		return nil, errors.New("xrayrun: stopping")
+		return nil, ErrStopping
 	}
 	cmd := exec.Command(r.xrayPath, "run", "-config", "stdin:")
 	cmd.Env = validate.MinimalEnv(r.assetDir)
@@ -218,7 +242,7 @@ func (r *Runner) spawn(cfg []byte) (*waiter, error) {
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start xray: %s", validate.Scrub(err.Error(), cfg))
+		return nil, fmt.Errorf("%w: %s", ErrSpawn, validate.Scrub(err.Error(), cfg))
 	}
 	r.cur = cmd.Process
 	w := &waiter{cmd: cmd, out: out, end: make(chan error, 1)}
@@ -259,7 +283,7 @@ func (r *Runner) loop(cfg []byte, w *waiter) {
 			crashes = crashes[1:]
 		}
 		if len(crashes) >= crashLimit {
-			r.emit(Event{Kind: GaveUp, Err: fmt.Errorf("xray crashed %d times within %v: %w", len(crashes), crashWindow, crashErr)})
+			r.emit(Event{Kind: GaveUp, Err: fmt.Errorf("%w: %d within %v: %w", ErrGaveUp, len(crashes), crashWindow, crashErr)})
 			return
 		}
 		delay := backoff[min(len(crashes), len(backoff))-1]
@@ -287,7 +311,7 @@ func (r *Runner) loop(cfg []byte, w *waiter) {
 			}
 			r.emit(Event{Kind: Exited, Err: serr})
 			if len(crashes) >= crashLimit {
-				r.emit(Event{Kind: GaveUp, Err: serr})
+				r.emit(Event{Kind: GaveUp, Err: fmt.Errorf("%w: %w", ErrGaveUp, serr)})
 				return
 			}
 			delay = backoff[min(len(crashes), len(backoff))-1]
@@ -314,15 +338,19 @@ func (r *Runner) crashError(err error, out *ringBuf, cfg []byte) error {
 		tail = "..." + tail[len(tail)-errTail:]
 	}
 	if tail == "" {
-		return fmt.Errorf("xray exited: %v", err)
+		return fmt.Errorf("%w: %v", ErrExited, err)
 	}
-	return fmt.Errorf("xray exited: %v: %s", err, tail)
+	return fmt.Errorf("%w: %v: %s", ErrExited, err, tail)
 }
 
 // Stop ends the supervised child: a graceful interrupt first (Unix), then
 // Kill after timeout; on Windows it kills at once. Only the process this
 // Runner started is signalled. Stopping a runner that is not running is a
-// no-op.
+// no-op. Stop ends only the Start it saw: if a newer Start happens while
+// it waits, that Start's state is left alone.
+//
+// After a GaveUp event no child runs, but the Runner stays started: Start
+// returns ErrAlreadyStarted until Stop is called.
 func (r *Runner) Stop(timeout time.Duration) error {
 	r.mu.Lock()
 	if !r.running {
@@ -333,7 +361,7 @@ func (r *Runner) Stop(timeout time.Duration) error {
 		r.stopping = true
 		close(r.stopCh)
 	}
-	p, done := r.cur, r.done
+	p, done, gen := r.cur, r.done, r.gen
 	r.mu.Unlock()
 
 	var killErr error
@@ -352,8 +380,13 @@ func (r *Runner) Stop(timeout time.Duration) error {
 	} else {
 		<-done
 	}
+	if r.afterStopWait != nil {
+		r.afterStopWait()
+	}
 	r.mu.Lock()
-	r.running, r.cur = false, nil
+	if r.gen == gen { // a newer Start owns the state otherwise
+		r.running, r.cur = false, nil
+	}
 	r.mu.Unlock()
 	return killErr
 }
