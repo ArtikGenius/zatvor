@@ -130,6 +130,17 @@ Download `proto-ui-tauri-macos-universal` and `proto-ui-wails-macos-universal` f
    closes. Right click on the icon: menu with "Выход".
 5. **Log:** send `~/Library/Logs/ZatvorProto/tauri.log` and `wails.log` (Finder → Go → Go to Folder).
 
+### Second round results, 2026-11-22
+
+Artur: start, clicks and theme switching work in both apps, the popup opens under the icon (logs show the
+Tauri placement at (1292, 76) physical under an icon at x 1618 on a 2704x1756 scale-2 screen). The Tauri
+popup was unstyled (serif font, no layout). Cause: Tauri adds hashes of the page's `<style>` block to
+`style-src`, and a CSP with a hash ignores `'unsafe-inline'`, so every `style="..."` attribute was blocked.
+This affected the Windows builds and every earlier Tauri measurement too (paint timing is unaffected, the
+layout was not what the mockup shows). Fix: `dangerousDisableAssetCspModification: ["style-src"]` (script-src
+keeps Tauri's protection); stage 1 UI uses classes instead of style attributes. The page now reports whether
+its styles applied, and `uicheck.sh` fails without `styles=ok`.
+
 ## Limits
 
 - Tray clicks, the placement relative to the tray and the notch, and dark mode were not exercised on the

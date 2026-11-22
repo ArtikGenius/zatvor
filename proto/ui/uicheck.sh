@@ -45,6 +45,7 @@ if [ ! -s "$res" ]; then
 	cat "$log" >&2 || true
 	exit 1
 fi
+grep -q "styles=ok" "$log" || { echo "page styles were not applied (CSP?)" >&2; exit 1; }
 cp "$res" "results/$fw-macos-ui-check.json"
 cat "$res"
 python3 - "$res" <<'PY'

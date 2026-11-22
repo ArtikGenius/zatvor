@@ -66,6 +66,12 @@
     if (actions[a]) actions[a](b);
     report("click " + a + (e.isTrusted ? " trusted" : " synthetic"));
   });
+  // Inline style attributes carry most of the layout; a CSP that drops
+  // 'unsafe-inline' leaves the page unstyled (serif font, no flex).
+  var root = document.getElementById("root");
+  var cs = root ? getComputedStyle(root) : null;
+  var styled = !!cs && cs.display === "flex" && cs.fontFamily.indexOf("Onest") >= 0;
   report("page loaded, colour scheme " +
-    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") +
+    ", styles=" + (styled ? "ok" : "missing"));
 })();
