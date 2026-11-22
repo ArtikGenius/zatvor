@@ -40,7 +40,7 @@ const (
 	driftInterval   = 5 * time.Second
 	recheckInterval = 10 * time.Second // first re-check after a failed recovery
 	recheckMax      = 5 * time.Minute  // the re-check backoff doubles up to this
-	switchRetry     = time.Second // an interrupted geo switch runs again
+	switchRetry     = time.Second      // an interrupted geo switch runs again
 )
 
 // Runner supervises one Xray process; *xrayrun.Runner implements it. After
