@@ -106,14 +106,20 @@ func (f *Fetcher) Fetch(ctx context.Context, req Request) (Result, error) {
 		return Result{Problem: Network}, errors.New("subscription URL is not a valid http(s) URL")
 	}
 	host := u.Host
-	v, err, _ := f.group.Do(flightKey(req), func() (any, error) {
-		return f.do(ctx, req, host)
+	// The shared request must not die with the first caller's context.
+	shared := context.WithoutCancel(ctx)
+	ch := f.group.DoChan(flightKey(req), func() (any, error) {
+		return f.do(shared, req, host)
 	})
-	if err != nil {
-		return Result{Problem: Network}, err
+	select {
+	case <-ctx.Done():
+		return Result{Problem: Network}, fmt.Errorf("request to %s canceled", host)
+	case out := <-ch:
+		if out.Err != nil {
+			return Result{Problem: Network}, out.Err
+		}
+		return classify(out.Val.(*raw)), nil
 	}
-	r := v.(*raw)
-	return classify(r), nil
 }
 
 func flightKey(req Request) string {
@@ -163,11 +169,11 @@ func (f *Fetcher) do(ctx context.Context, req Request, host string) (*raw, error
 		Transport: tr,
 		CheckRedirect: func(next *http.Request, via []*http.Request) error {
 			if len(via) > maxRedirects {
-				return fmt.Errorf("more than %d redirects from %s", maxRedirects, host)
+				return &redirectError{fmt.Sprintf("more than %d redirects from %s", maxRedirects, host)}
 			}
 			prev := via[len(via)-1]
 			if prev.URL.Scheme == "https" && next.URL.Scheme != "https" {
-				return fmt.Errorf("redirect from %s to %s downgrades https to http", prev.URL.Host, next.URL.Host)
+				return &redirectError{fmt.Sprintf("redirect from %s to %s downgrades https to http", prev.URL.Host, next.URL.Host)}
 			}
 			// HWID identifies the device to the subscription host only.
 			if hwid.NormalizeHost(next.URL.Host) != hwid.NormalizeHost(via[0].URL.Host) {
@@ -208,19 +214,23 @@ func (f *Fetcher) do(ctx context.Context, req Request, host string) (*raw, error
 }
 
 // networkError drops the *url.Error wrapper, which prints the full URL.
+// Only our own redirectError and fixed messages leave this function: Go's
+// errors can embed a Location value or URL, which may hold a token.
 func networkError(err error, host string) error {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		err = ue.Err
+	var re *redirectError
+	if errors.As(err, &re) {
+		return re
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("request to %s timed out", host)
 	}
-	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("request to %s canceled", host)
-	}
-	return fmt.Errorf("request to %s failed: %v", host, err)
+	return fmt.Errorf("request to %s failed", host)
 }
+
+// redirectError carries a message built from host names only.
+type redirectError struct{ msg string }
+
+func (e *redirectError) Error() string { return e.msg }
 
 func classify(r *raw) Result {
 	res := Result{Status: r.status}

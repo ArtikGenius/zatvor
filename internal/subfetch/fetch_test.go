@@ -270,6 +270,65 @@ func TestRedirectLimit(t *testing.T) {
 	}
 }
 
+func TestFirstCallerCancelDoesNotPoisonWaiters(t *testing.T) {
+	var n atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		<-release
+		_, _ = w.Write([]byte(linkBody))
+	}))
+	defer srv.Close()
+	f := New(5 * time.Second)
+	req := Request{URL: srv.URL + "/sub", UA: "ua"}
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() { _, err := f.Fetch(ctx1, req); first <- err }()
+	time.Sleep(100 * time.Millisecond)
+	second := make(chan Result, 1)
+	go func() {
+		r, err := f.Fetch(context.Background(), req)
+		if err != nil {
+			t.Error(err)
+		}
+		second <- r
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel1()
+	if err := <-first; err == nil {
+		t.Fatal("cancelled caller got no error")
+	}
+	close(release)
+	if r := <-second; r.Problem != None || len(r.Body.Nodes) != 1 {
+		t.Fatalf("waiter: %+v", r)
+	}
+	if got := n.Load(); got != 1 {
+		t.Fatalf("server saw %d requests, want 1", got)
+	}
+}
+
+func TestNoSecretInRedirectError(t *testing.T) {
+	for _, loc := range []string{
+		"https://other.example.com/sub/SECRETTOKEN2?x=%zz",
+		"http://[::1/SECRETTOKEN2",
+		"\x7f://SECRETTOKEN2",
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", loc)
+			w.WriteHeader(http.StatusFound)
+		}))
+		res, err := New(2*time.Second).Fetch(context.Background(), Request{URL: srv.URL + "/start", UA: "ua"})
+		srv.Close()
+		if err == nil || res.Problem != Network {
+			t.Fatalf("%q: err=%v problem=%v", loc, err, res.Problem)
+		}
+		if strings.Contains(err.Error(), "SECRETTOKEN2") || strings.Contains(err.Error(), "/sub/") || strings.Contains(err.Error(), "/start") {
+			t.Fatalf("%q: leaked: %v", loc, err)
+		}
+	}
+}
+
 func TestUAHelpers(t *testing.T) {
 	if DefaultUA("1.0.0", "windows") != "Zatvor/1.0.0 (windows)" || DefaultUA("1.0.0", "macos") != "Zatvor/1.0.0 (macos)" {
 		t.Fatal("DefaultUA")
