@@ -40,3 +40,37 @@ func TestHeaders(t *testing.T) {
 		t.Fatalf("empty fields omitted: %v", h)
 	}
 }
+
+func TestNormalizeHost(t *testing.T) {
+	cases := map[string]string{
+		"Sub.Example.COM:8443": "sub.example.com",
+		"sub.example.com.":     "sub.example.com",
+		"[2001:DB8::1]:443":    "2001:db8::1",
+		"[2001:DB8::1]":        "2001:db8::1",
+		"fe80::1%eth0":         "fe80::1",
+		"[fe80::1%eth0]:80":    "fe80::1",
+		"пример.рф":            "xn--e1afmkfd.xn--p1ai",
+		"  sub.example.com ":   "sub.example.com",
+		"sub.example.com":      "sub.example.com",
+	}
+	for in, want := range cases {
+		if got := NormalizeHost(in); got != want {
+			t.Errorf("NormalizeHost(%q) = %q, want %q", in, got, want)
+		}
+		if ID("m", in) != ID("m", want) {
+			t.Errorf("ID differs for %q and %q", in, want)
+		}
+	}
+}
+
+func TestMachineIDNormalised(t *testing.T) {
+	want := ID("abc-def", "sub.example.com")
+	for _, in := range []string{"ABC-DEF", "  abc-def\n", " ABC-def "} {
+		if ID(in, "sub.example.com") != want {
+			t.Errorf("machine id %q not normalised", in)
+		}
+	}
+	if got := ID("00000000-0000-0000-0000-000000000000", "Sub.Example.com:443"); got != goldenVector {
+		t.Fatalf("golden vector changed: %s", got)
+	}
+}

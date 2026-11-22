@@ -37,8 +37,13 @@ keeps its `v1` name for the same reason.
 - Stage 1 implements it exactly and adds a golden-vector test that fails on any change.
 - A machine reinstall that keeps the machine id keeps its slot; a changed machine id (new OS install on
   Windows) is a new device, as with any HWID scheme.
-- `subscription_host` is the lower-case hostname of the subscription URL (`url.Hostname()` lower-cased): no
-  port, no path, no brackets around IPv6. `hwid.ID` does not normalise; callers pass that form. Frozen.
+- Input normalisation is enforced in code by `hwid.ID` and is frozen:
+  - `machine_id`: `strings.ToLower(strings.TrimSpace(machine_id))` on every OS.
+  - `subscription_host`: `hwid.NormalizeHost`. Accepts `host`, `host:port`, `[v6]`, `[v6]:port` or a bare IPv6
+    address; lower-cases; strips port, brackets, an IPv6 zone (`%eth0`) and one trailing dot; converts IDN to
+    punycode with `golang.org/x/net/idna` Lookup profile (on error the lower-cased input is kept).
+  - Vectors: `Sub.Example.COM:8443` -> `sub.example.com`; `sub.example.com.` -> `sub.example.com`;
+    `[2001:DB8::1]:443` -> `2001:db8::1`; `fe80::1%eth0` -> `fe80::1`; `пример.рф` -> `xn--e1afmkfd.xn--p1ai`.
 
 ## Golden vector
 
