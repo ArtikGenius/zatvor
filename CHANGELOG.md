@@ -4,6 +4,27 @@ All notable changes to Zatvor are recorded here.
 
 ## Unreleased
 
+### Stage 1b (zatvord on Windows)
+
+- `appdir`, `settings`: per-user data, run, log and journal directories with a single full-control ACE on Windows; versioned settings that refuse a newer file and never save an empty one; `LocalAPIPort` kept apart from the Xray ports.
+- `ports`: persisted loopback ports re-validated at start; a busy or reserved port is re-picked, with a gap between ports and well-known proxy ports avoided.
+- `journal`: fsynced write-ahead change journal; `RevertAll` restores a value only while it is still ours and never closes older entries behind a failed one; torn tails repaired.
+- `sysproxy`: journaled Windows system proxy for the LAN and RAS connections, read back exactly (including the auto-detect flag); a foreign PAC or manual proxy is a typed conflict the user resolves.
+- `store` keys: DPAPI file key (safe mode) and Credential Manager key (live mode), with the DPAPI-to-Credential-Manager migration.
+- `geo/assets`, `tools/geofetch`: pinned bundled geo (git-tracked roscomvpn files, v2fly), profile geo URLs over https, merged-set cache with rollback; `geofetch` downloads and verifies the pins.
+- `engine`: connect through the system proxy with the three-service tunnel check, fail policy, geo bootstrap, drift warnings and conflict resolution; superseded and cancelled connects never touch the live session.
+- `xrayrun`: Windows job object kill-on-close; per-outbound latency fallback only for config failures; latency waits for our own SOCKS5 inbound.
+- `subsvc`: subscription service (add, refresh, scheduled updates only through the tunnel); a changed-but-invalid profile keeps the old working copy; new subscriptions send device headers.
+- `devtools`: journaled proxy routing for PowerShell, bash, Claude Code, VS Code, and Codex and Gemini wrappers with a nesting guard (ADR 0013).
+- `api`, `instance`: local API v1 with token, `Host` and `Origin` checks and SSE events; single instance per user session with discovery file.
+- `daemon`: `zatvord` assembled with crash recovery, per-mode stores and journals, log rotation, shutdown gate and state-file retry.
+- `supervisor`: restarts a crashed daemon with backoff and reverts the journal itself when it gives up (ADR 0012).
+- `cmd/zatvord`: the daemon binary; safe mode is the default, live mode needs `ZATVOR_ALLOW_LIVE=1`.
+- `cmd/zatvor`: `status`, `check` (exit codes 0 ok, 1 bad or not connected, 2 unknown, 3 daemon not running) and `diag -o FILE.zip`.
+- `diag`, `validate`: redacted diagnostics bundle (stored secrets, URL user info, dev-tool values and exit addresses replaced); `validate` gains secret-variant helpers for it.
+- Live Windows acceptance on `windows-latest` (`systemtest`): connect, crash revert and dev tools; runs 45048050788 and 45049736536.
+- ADRs 0012 and 0013; README "What Zatvor sends" updated; stage 1b checklist.
+
 ### Stage 1a (core engine)
 
 - `ojson`: JSON objects with key order kept, used for configs and the store.

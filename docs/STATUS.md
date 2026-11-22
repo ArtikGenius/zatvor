@@ -1,6 +1,8 @@
 # Status
 
-Stage 1a (OS-independent core engine) is complete as of 2026-11-22 on branch `stage-1`, pending review and the merge to main. Next: stage 1b (zatvord on Windows). Stage 0c is complete, pending the macOS UI check.
+Stage 1b (zatvord on Windows) is complete as of 2026-11-22 on branch `stage-1b`, pending the 1b final fix wave and the merge to main. Next: stage 1c (UI and delivery). Stage 1a is complete and merged. Stage 0c is complete, pending the macOS UI check.
+Plan of 1b: [docs/superpowers/plans/2026-11-22-stage-1b-zatvord-windows.md](superpowers/plans/2026-11-22-stage-1b-zatvord-windows.md).
+What to check: [docs/checklists/stage-1b.md](checklists/stage-1b.md) (nothing to run by hand).
 Plan of 1a: [docs/superpowers/plans/2026-11-22-stage-1a-core-engine.md](superpowers/plans/2026-11-22-stage-1a-core-engine.md).
 What to check: [docs/checklists/stage-1a.md](checklists/stage-1a.md) (nothing to run by hand).
 Plan of 0c: [docs/superpowers/plans/2026-11-19-stage-0c-prototypes.md](superpowers/plans/2026-11-19-stage-0c-prototypes.md); checklist [docs/checklists/stage-0c.md](checklists/stage-0c.md).
@@ -23,6 +25,39 @@ Plan of 0c: [docs/superpowers/plans/2026-11-19-stage-0c-prototypes.md](superpowe
 CI evidence: run [45016047924](https://github.com/ArtikGenius/zatvor/actions/runs/45016047924) (commit 8d079b3, first all-green with the e2e tests) and run [45016399057](https://github.com/ArtikGenius/zatvor/actions/runs/45016399057) (commit 8528d14, latest at the time of writing).
 
 Known CI incident: the `secrets` CI job failed from 1f7ccd3 until eec06c6. The pre-commit hook was not enabled in the working clone, so fake test UUIDs reached CI unchecked. Fixed by allow-listing the fake UUIDs and adding `scripts/dev/enable-hooks.sh`. Run it once in every new clone.
+
+## Done in 1b
+
+- `appdir`, `settings`: per-user data directories with one full-control ACE, versioned settings.
+- `ports`: persisted loopback ports, a busy one re-picked.
+- `journal`, `sysproxy`: fsynced change journal with safe revert; journaled Windows system proxy with conflict detection ([ADR 0012](decisions/0012-journal-and-revert.md)).
+- `store` keys, `geo/assets`, `tools/geofetch`: DPAPI and Credential Manager key providers; pinned bundled geo and a merged-set cache.
+- `engine`, `xrayrun`: connect through the system proxy with the tunnel check and fail policy; job object kill-on-close.
+- `subsvc`, `devtools`: subscription service with tunnel-only scheduled updates; journaled dev-tool routing ([ADR 0013](decisions/0013-devtool-routing-targets.md)).
+- `api`, `instance`, `daemon`, `supervisor`: local API v1, single instance, `zatvord`, crash supervisor.
+- `cmd/zatvord`, `cmd/zatvor`, `diag`: the daemon, the CLI (`status`, `check`, `diag`) and the redacted diagnostics bundle.
+- Live acceptance on `windows-latest`: [45048050788](https://github.com/ArtikGenius/zatvor/actions/runs/45048050788) (9d97c48) and [45049736536](https://github.com/ArtikGenius/zatvor/actions/runs/45049736536) (6c0c2c9), attempts 1 and 2 each, all green.
+- Ledger with rulings R1-R55 and per-task reports: `.superpowers/sdd/2026-11-22-stage-1b-zatvord-windows/`.
+
+## Known limitations in 1b
+
+- Without autostart, a killed process tree or a power loss leaves the system proxy on a dead port until the next launch (spec §8). Revisit with autostart in 1c.
+- A dev-tools toggle while connected applies at the next connect.
+- Xray and the bundled geo files are expected next to the executable (`XrayPath`, `BundledGeo`). This matters for the installer layout in 1c.
+- Diagnostics do not redact standalone secrets shorter than 6 bytes, such as a very short Reality shortId shown alone (R52).
+- The local API has no `GET /v1/settings` yet (1c).
+- The `Local\` single-instance mutex is per session: RDP plus a console session can run two daemons.
+- Safe and live modes keep separate stores and journals (R43, R16): switching modes shows a different, empty subscription list.
+
+## Scheduled for the 1b final fix wave
+
+These three are fixed before the PR merges:
+
+- `subsvc`: a failed `Start` refresh blocks scheduled updates for a full interval (seed the backoff instead).
+- `xrayrun` latency test: robust against a parallel package grabbing the port (R47 fixed the runner; the test's own helper is the open part).
+- `engine` ready checks (`engine.go:136`) use a plain `DialReady` on bind-then-close ports; use the protocol-aware check (mixed = SOCKS/HTTP, probe = SOCKS).
+
+The final reviewer also checks that `profileGeo` source selection in `engine` agrees with the `gen` routing source.
 
 ## Done in 0c
 
@@ -48,6 +83,8 @@ See [docs/decisions/README.md](decisions/README.md).
 - [0009](decisions/0009-local-api.md) Local API
 - [0010](decisions/0010-provider-routing-and-proxy-tag.md) Provider routing never rewritten; ProxyTag rule
 - [0011](decisions/0011-store-format-and-backup.md) Encrypted store format and backup
+- [0012](decisions/0012-journal-and-revert.md) Journal and revert semantics
+- [0013](decisions/0013-devtool-routing-targets.md) Dev-tool routing targets
 
 ## Open follow-ups
 
@@ -90,9 +127,30 @@ Deferred minor review findings from 1a:
 - e2e: server rules are not strictly narrow (add a trailing block-all); one assertion depends on exact spacing; the log-ready check matches any " started"; port races; the access log is proof only on Windows and macOS.
 - secretscan fix: a mixed-case allow entry; `enable-hooks.sh` does not use `--local`; `TestRunStagedExitCode` does not cover the allow path.
 
-## Next: stage 1b and 1c
+Deferred minor review findings from 1b:
+- appdir, settings: `Resolve` tightens permissions on any `--data-dir` (daemon validates it); the every-field guard skips struct subfields; a dir fsync error is ignored on Windows.
+- ports: `TestExhausted` should assert calls > 0; `TestLoopbackProber` should hold a real listener (TCP-only and UDP-only cases) and not skip on error; nil `rnd` doc note.
+- journal: `done()` re-reads the whole file (O(n^2)); no test for `RevertAll` when `pending()` fails; the Reverter doc should say Current must encode like Applied (literal compare with UseNumber); `pending()` skips unparsable mid-file lines silently.
+- sysproxy: the named RAS connection path is never exercised on the runner; a possible auto-detect flake in the foreign-PAC systemtest; `setConn` retry discards the first error and can leave a half state on double failure; `getConn` falls back to FLAGS on any error.
+- store keys: in-process CredMan first-write race (needs a mutex); the `CredRead` blob is not zeroed before `CredFree`; the `CredFree` result is discarded; the DACL test should assert the mask.
+- geo/assets: mutex held across a download; `url+".sha256"` is wrong for URLs with query strings; `Prepare` re-hashes inputs on reuse; a cached profile file replaces the bundled roscomvpn one (a tag only in the bundle then goes missing); the `Fetch` swap loop is non-transactional across the two files (safe through `cachedPath`); no test for "already cached, `NeedsBootstrap` false".
+- engine: a geo switch cannot be interrupted after the old runner stopped (latency only).
+- subsvc: `Start` joining a User flight does not record the attempt; a `Run` cancel mid-flight logs a false failure and a detached flight may save during shutdown; `TestButtonNeverJoinsScheduledFlight` needs a deadline; the per-user settings snapshot of a profile could be lost by future direct store edits.
+- devtools: an empty object with a comment is cosmetic; a new-file create could use a no-replace rename; the `.ps1` wrapper does not run under a Restricted policy (UI note in 1c).
+- api: test globals are restored before `srv.Stop` (narrow race window); the local API has no `GET /v1/settings` (1c); the `Local\` mutex is per session.
+- xrayrun: the `TestSocksReady` late-listener subtest rebinds a freed port.
+- daemon, e2e: `saveRunner` and the gate are duplicated across the live-test packages.
 
-1b: new subscriptions get `SendDevice=true` and the connectivity check through the tunnel is added; zatvord on Windows (state and local API, single instance, journal and revert, system proxy, port picker, key providers, scheduled updates, geo bootstrap, dev-tool routing, supervisor, diagnostics, CLI). 1c: Tauri tray and panel, first run, MSI, stage 1 acceptance from Artur's home internet.
+## Next: stage 1c
+
+1c, UI and delivery:
+- The Tauri tray and popup on the local API: styles as classes, the origin added to the API allow-list, and a named pipe reconsidered (ADR 0009).
+- Panel basics: overview, profiles and subscriptions, settings, about.
+- First run: paste the link, then a warning that the first request registers a device, then connect.
+- The "send device info" switch, the Happ hint card (§5.3) and the update diff.
+- ru/en and light/dark.
+- MSI (WiX v5), machine-wide, with autostart and an installer layout that puts Xray and geo next to `zatvord.exe`.
+- Stage 1 acceptance with Artur: his test subscription imports, and Hysteria2-DNS, XHTTP and Vision connect from his home internet.
 
 Stage 1 overall:
 

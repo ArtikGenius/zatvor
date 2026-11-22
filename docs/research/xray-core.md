@@ -252,7 +252,7 @@ The jsDelivr URLs pinned in happ-routing.json (`roscomvpn-geoip@202610260848`, `
 - geosite tag 202610120948 → `bb0e6b3`
 - geoip tag 202610260848 → `152ad51`
 
-The pinned `.dat` SHA-256 values match the repos' own `release/*.dat.sha256` files at those tags: geoip `3273bef3…a6bd`, geosite `95f15c43…f001`.
+The Happ profile's `.dat` SHA-256 values match the repos' own `release/*.dat.sha256` files at those tags: geoip `3273bef3…a6bd`, geosite `95f15c43…f001`. Zatvor pins the **git-tracked** `release/` files at their tags (ruling R20; `third_party/geo/pin.json`, fetched from raw.githubusercontent), because that is what the jsDelivr URLs in Happ profiles serve. The GitHub **release asset** of the same tag is a different file for roscomvpn geosite (tag 202610120948: asset `6fadc929…a464`, git-tracked file `95f15c43…f001`), so a hash taken from a release asset does not match. `pin.json` currently pins geoip tag 202611221113 (`d5720327…8ae5`), not the fixture's 202610260848.
 
 **Cadence** (`git ls-remote --tags`):
 - **geoip:** 416 tags, released **daily** at about 10:00–11:30 UTC. The latest is `202611191131`.
