@@ -418,3 +418,65 @@ func TestE2ELegacyRunsAsIs(t *testing.T) {
 	}
 	checkCarried(t, srv, echo, getThrough(t, mixed, echo, srv))
 }
+
+// awkward holds the characters most likely to break a link, JSON or
+// command-line path: a quote, a backslash, '#', '%', a space, an emoji and
+// Cyrillic.
+const awkward = `a"b\c#d%e f😀Пароль`
+
+// TestE2EAwkwardSecret takes a Hysteria2 share link whose auth, salamander
+// password and remark hold awkward characters through link.Parse (via
+// subbody.Decode), gen.Build, xray run -test and a real connection.
+func TestE2EAwkwardSecret(t *testing.T) {
+	bin := xrayBin(t)
+	keys := NewKeys(t, bin)
+	keys.Hy2Auth = awkward + randHex(t, 8)
+	keys.SalamanderPassword = awkward + randHex(t, 8)
+	echo := StartEcho(t)
+	srv := StartHysteria2(t, bin, keys)
+
+	remark := `Сервер "e2e" \ #1 100% 😀`
+	q := url.Values{}
+	q.Set("sni", Hy2SNI)
+	q.Set("pinSHA256", keys.CertSHA256)
+	q.Set("obfs", "salamander")
+	q.Set("obfs-password", keys.SalamanderPassword)
+	line := "hysteria2://" + url.PathEscape(keys.Hy2Auth) + "@127.0.0.1:" + strconv.Itoa(srv.Port) +
+		"/?" + q.Encode() + "#" + url.PathEscape(remark)
+
+	dec := subbody.Decode([]byte(line + "\n"))
+	if len(dec.Nodes) != 1 {
+		t.Fatalf("decode: %d nodes, skipped %+v", len(dec.Nodes), dec.Skipped)
+	}
+	n := dec.Nodes[0]
+	if n.Params["password"] != keys.Hy2Auth || n.Params["obfs-password"] != keys.SalamanderPassword || n.Remark != remark {
+		t.Fatal("link.Parse changed the auth, obfs password or remark")
+	}
+	if again, err := link.Parse(link.Export(n)); err != nil || again.Params["password"] != keys.Hy2Auth || again.Remark != remark {
+		t.Fatalf("link.Export does not round-trip the awkward characters (err %v)", err)
+	}
+
+	mixed, cfg := runClient(t, bin, []byte(line+"\n"), allProxy)
+	var got struct {
+		Outbounds []struct {
+			Tag            string
+			StreamSettings struct {
+				HysteriaSettings struct{ Auth string }
+				Finalmask        struct {
+					UDP []struct {
+						Settings struct{ Password string }
+					}
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(cfg, &got); err != nil {
+		t.Fatal(err)
+	}
+	ss := got.Outbounds[0].StreamSettings
+	if got.Outbounds[0].Tag != "proxy" || ss.HysteriaSettings.Auth != keys.Hy2Auth ||
+		len(ss.Finalmask.UDP) != 1 || ss.Finalmask.UDP[0].Settings.Password != keys.SalamanderPassword {
+		t.Fatal("generated config does not carry the auth and obfs password unchanged")
+	}
+	checkCarried(t, srv, echo, getThrough(t, mixed, echo, srv))
+}
