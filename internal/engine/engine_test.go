@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,7 +55,9 @@ type world struct {
 	applyErrs []error // popped per Apply
 	drift     bool
 	checks    []engine.CheckResult // popped per check; empty: OK
-	onCheck   func()
+	onCheck   func(ctx context.Context)
+	onApply   func()
+	revertErr []error // popped per Revert
 	prepares  int
 	missing   []merge.MissingTagError // returned by the first Prepare
 	bootstrap bool
@@ -113,8 +116,11 @@ func (r *fakeRunner) Start(ctx context.Context, cfg []byte, ready xrayrun.ReadyC
 		err, r.w.startErrs = r.w.startErrs[0], r.w.startErrs[1:]
 	}
 	r.w.mu.Unlock()
-	if err == nil {
-		r.ev <- xrayrun.Event{Kind: xrayrun.Started}
+	// Like xrayrun: the child was launched (Started); a failed ready check
+	// then stops it (Exited without an error).
+	r.ev <- xrayrun.Event{Kind: xrayrun.Started}
+	if err != nil {
+		r.ev <- xrayrun.Event{Kind: xrayrun.Exited}
 	}
 	return err
 }
@@ -128,17 +134,30 @@ type fakeProxy struct{ w *world }
 func (p fakeProxy) Apply(ours sysapi.ProxyState, force bool) error {
 	p.w.record(fmt.Sprintf("apply %s force=%v", ours.Server, force))
 	p.w.mu.Lock()
-	defer p.w.mu.Unlock()
 	p.w.applies = append(p.w.applies, ours)
 	p.w.forces = append(p.w.forces, force)
 	var err error
 	if len(p.w.applyErrs) > 0 {
 		err, p.w.applyErrs = p.w.applyErrs[0], p.w.applyErrs[1:]
 	}
+	hook := p.w.onApply
+	p.w.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return err
 }
 
-func (p fakeProxy) Revert() error { p.w.record("revert"); return nil }
+func (p fakeProxy) Revert() error {
+	p.w.record("revert")
+	p.w.mu.Lock()
+	defer p.w.mu.Unlock()
+	var err error
+	if len(p.w.revertErr) > 0 {
+		err, p.w.revertErr = p.w.revertErr[0], p.w.revertErr[1:]
+	}
+	return err
+}
 func (p fakeProxy) LastRevert() []journal.RevertResult {
 	p.w.mu.Lock()
 	defer p.w.mu.Unlock()
@@ -190,7 +209,7 @@ func (w *world) check(ctx context.Context, dial subfetch.Dialer) engine.CheckRes
 	}
 	w.mu.Unlock()
 	if hook != nil {
-		hook()
+		hook(ctx)
 	}
 	return res
 }
@@ -383,7 +402,7 @@ func parseCfg(t *testing.T, cfg []byte) cfgInfo {
 
 func TestProxySetOnlyAfterCheck(t *testing.T) {
 	g := newRig(t, nil)
-	g.w.onCheck = func() {
+	g.w.onCheck = func(context.Context) {
 		if n := g.w.count("apply"); n != 0 {
 			t.Errorf("Apply ran %d times before the tunnel check finished", n)
 		}
@@ -465,9 +484,14 @@ func TestXrayCrashRevertsProxy(t *testing.T) {
 	if _, ok := g.e.ProbeDialer(); ok {
 		t.Error("ProbeDialer available while Xray is down")
 	}
-	// A restart that is only scheduled re-applies nothing.
+	// A restart that is only scheduled re-applies nothing. Events are
+	// handled in order: once the second crash shows, Restarting was handled.
 	g.w.runner(0).ev <- xrayrun.Event{Kind: xrayrun.Restarting, Delay: time.Second}
-	time.Sleep(20 * time.Millisecond)
+	g.w.runner(0).ev <- xrayrun.Event{Kind: xrayrun.Exited, Err: errors.New("second crash")}
+	waitFor(t, "second crash", func() bool {
+		s := g.e.State()
+		return s.Err != nil && strings.Contains(s.Err.Message, "second crash")
+	})
 	if n := g.w.count("apply"); n != 1 {
 		t.Fatalf("Apply ran %d times, want 1", n)
 	}
@@ -758,11 +782,12 @@ type socksRecorder struct {
 	auth []string
 }
 
-func newSocksRecorder(t *testing.T, port int) *socksRecorder {
+// newSocksRecorder listens on a free loopback port.
+func newSocksRecorder(t *testing.T) *socksRecorder {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skipf("probe port %d is taken: %v", port, err)
+		t.Fatal(err)
 	}
 	s := &socksRecorder{ln: ln}
 	t.Cleanup(func() { ln.Close() })
@@ -777,6 +802,8 @@ func newSocksRecorder(t *testing.T, port int) *socksRecorder {
 	}()
 	return s
 }
+
+func (s *socksRecorder) port() int { return s.ln.Addr().(*net.TCPAddr).Port }
 
 func (s *socksRecorder) serve(c net.Conn) {
 	defer c.Close()
@@ -829,8 +856,13 @@ func happProfile(t *testing.T) profile.Profile {
 }
 
 func TestBootstrapThenSwitch(t *testing.T) {
-	g := newRig(t, nil)
-	socks := newSocksRecorder(t, testPorts.Probe)
+	socks := newSocksRecorder(t)
+	pp := testPorts
+	pp.Probe = socks.port()
+	g := newRig(t, func(d *engine.Deps) {
+		d.InitialPorts = pp
+		d.Ports = func(prev gen.Ports) (gen.Ports, bool, error) { return pp, prev != pp, nil }
+	})
 	g.w.bootstrap = true
 	fetched := make(chan assets.ProfileGeo, 1)
 	g.w.fetch = func(ctx context.Context, pg assets.ProfileGeo, dial subfetch.Dialer) error {
@@ -973,6 +1005,147 @@ func TestDefaultCheckServices(t *testing.T) {
 	for _, s := range engine.DefaultCheckServices {
 		if strings.Contains(s, ".ru/") || strings.HasSuffix(s, ".ru") || !strings.HasPrefix(s, "https://") {
 			t.Errorf("service %q breaks R3.10", s)
+		}
+	}
+}
+
+// TestGeoSwitchRollbackFails: the new set and the rollback both fail to
+// start. The failed runners' queued events (Started, then Exited from their
+// own stop) must not count as a recovery: Degraded, proxy reverted, no
+// probe dialer, no further check or Apply.
+func TestGeoSwitchRollbackFails(t *testing.T) {
+	g := newRig(t, nil)
+	g.w.bootstrap = true
+	g.w.startErrs = []error{nil, errors.New("xrayrun: xray not ready"), errors.New("xrayrun: xray not ready")}
+	if err := g.e.Connect(context.Background(), happProfile(t)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "degraded", func() bool {
+		s := g.e.State()
+		return s.Phase == engine.Degraded && s.Err != nil && s.Err.Code == "xray_start_failed"
+	})
+	checks := g.w.count("check")
+	// Let the loop go round several times; stale events would be read.
+	for i := 0; i < 4; i++ {
+		waitFor(t, "drift timer", func() bool { return g.clk.pending() >= 1 })
+		g.clk.Advance(5 * time.Second)
+		waitFor(t, "loop re-armed", func() bool { return g.clk.pending() >= 1 })
+	}
+	if n := g.w.count("check"); n != checks {
+		t.Fatalf("%d checks after the failed rollback, want %d", n, checks)
+	}
+	if n := g.w.count("apply"); n != 1 {
+		t.Fatalf("Apply ran %d times", n)
+	}
+	if n := g.w.count("revert"); n != 1 {
+		t.Fatalf("Revert ran %d times, want 1", n)
+	}
+	if _, ok := g.e.ProbeDialer(); ok {
+		t.Fatal("ProbeDialer available with no Xray running")
+	}
+	if st := g.e.State(); st.Phase != engine.Degraded {
+		t.Fatalf("state = %+v", st)
+	}
+}
+
+// TestDisconnectCancelsInflightConnect: Disconnect arrives while Connect
+// applies the proxy. Connect returns canceled and undoes itself, revert
+// before stop; the engine ends Disconnected with the proxy reverted.
+func TestDisconnectCancelsInflightConnect(t *testing.T) {
+	g := newRig(t, nil)
+	var connCtx context.Context
+	g.w.onCheck = func(ctx context.Context) { connCtx = ctx }
+	discDone := make(chan error, 1)
+	g.w.onApply = func() {
+		go func() { discDone <- g.e.Disconnect(context.Background()) }()
+		<-connCtx.Done() // Disconnect has cancelled this connect
+	}
+	err := g.e.Connect(context.Background(), linkProfile(t))
+	if err == nil || errCode(t, err) != "canceled" {
+		t.Fatalf("Connect = %v, want canceled", err)
+	}
+	if err := <-discDone; err != nil {
+		t.Fatal(err)
+	}
+	log := g.w.logCopy()
+	want := []string{"apply 127.0.0.1:31001 force=false", "revert", "stop set1"}
+	if got := log[len(log)-3:]; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("log = %q, want it to end with %q", log, want)
+	}
+	if st := g.e.State(); st.Phase != engine.Disconnected {
+		t.Fatalf("state = %+v", st)
+	}
+	if _, ok := g.e.ProbeDialer(); ok {
+		t.Fatal("ProbeDialer available after Disconnect")
+	}
+}
+
+// TestSupersededConnect: a second Connect cancels the first one in flight;
+// the first returns superseded, the second connects.
+func TestSupersededConnect(t *testing.T) {
+	g := newRig(t, nil)
+	inCheck := make(chan struct{})
+	var once sync.Once
+	g.w.onCheck = func(ctx context.Context) {
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			close(inCheck)
+			<-ctx.Done()
+		}
+	}
+	firstErr := make(chan error, 1)
+	go func() { firstErr <- g.e.Connect(context.Background(), linkProfile(t)) }()
+	<-inCheck
+	if err := g.e.Connect(context.Background(), linkProfile(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-firstErr; err == nil || errCode(t, err) != "superseded" {
+		t.Fatalf("first Connect = %v, want superseded", err)
+	}
+	if st := g.e.State(); st.Phase != engine.Connected {
+		t.Fatalf("state = %+v", st)
+	}
+	if n := g.w.count("apply"); n != 1 {
+		t.Fatalf("Apply ran %d times, want 1", n)
+	}
+}
+
+// TestRevertRetriedUntilSuccess: a revert that fails after a crash is
+// retried on the re-check timer until it succeeds.
+func TestRevertRetriedUntilSuccess(t *testing.T) {
+	g := newRig(t, nil)
+	g.w.revertErr = []error{errors.New("registry busy"), errors.New("registry busy")}
+	crash(t, g)
+	if !hasWarning(g.e.State(), "proxy_revert_failed") {
+		t.Fatalf("state = %+v", g.e.State())
+	}
+	for want := 2; want <= 3; want++ {
+		waitFor(t, "recheck timer", func() bool { return g.clk.pending() >= 2 }) // drift + recheck
+		g.clk.Advance(10 * time.Second)
+		waitFor(t, "revert retry", func() bool { return g.w.count("revert") == want })
+	}
+	waitFor(t, "warning cleared", func() bool { return !hasWarning(g.e.State(), "proxy_revert_failed") })
+	if st := g.e.State(); st.Phase != engine.Degraded {
+		t.Fatalf("state = %+v", st)
+	}
+}
+
+// TestGeoFetchErrorHidesURL: a failed download warns without quoting the
+// profile's geo URL.
+func TestGeoFetchErrorHidesURL(t *testing.T) {
+	g := newRig(t, nil)
+	g.w.bootstrap = true
+	g.w.fetch = func(ctx context.Context, pg assets.ProfileGeo, dial subfetch.Dialer) error {
+		return fmt.Errorf("geo assets: %w", &url.Error{Op: "Get", URL: pg.GeoSiteURL + "?token=abcdef123", Err: errors.New("connection refused")})
+	}
+	if err := g.e.Connect(context.Background(), happProfile(t)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "fetch warning", func() bool { return hasWarning(g.e.State(), "geo_fetch_failed") })
+	for _, w := range g.e.State().Warnings {
+		if strings.Contains(w.Message, "geo.example") || strings.Contains(w.Message, "abcdef123") {
+			t.Fatalf("warning quotes the URL: %q", w.Message)
 		}
 	}
 }

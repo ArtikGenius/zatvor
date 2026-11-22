@@ -30,7 +30,7 @@ func (e *Engine) loop(s *session) {
 		select {
 		case <-s.ctx.Done():
 			return
-		case ev := <-s.runner.Events():
+		case ev := <-s.events: // nil (blocks) while no runner is adopted
 			arm(e.onRunnerEvent(s, ev))
 		case <-drift:
 			e.pollDrift(s)
@@ -74,33 +74,41 @@ func (e *Engine) onRunnerEvent(s *session, ev xrayrun.Event) bool {
 		return e.recoverLocked(s)
 	case xrayrun.Exited:
 		if ev.Err != nil { // nil: our own Stop
-			e.lostXrayLocked(s, newError(CodeXrayExited, "Xray exited", ev.Err, s.cfg))
+			return e.lostXrayLocked(s, newError(CodeXrayExited, "Xray exited", ev.Err, s.cfg))
 		}
 	case xrayrun.GaveUp:
-		e.lostXrayLocked(s, newError(CodeXrayGaveUp, "Xray keeps crashing; no more restarts", ev.Err, s.cfg))
+		retry := e.lostXrayLocked(s, newError(CodeXrayGaveUp, "Xray keeps crashing; no more restarts", ev.Err, s.cfg))
 		_ = s.runner.Stop(stopTimeout)
+		return retry
 	}
 	return false
 }
 
-// lostXrayLocked: Xray is down. Revert the system proxy now so the user's
-// internet works without us, and go Degraded.
-func (e *Engine) lostXrayLocked(s *session, why *Error) {
-	e.bumpGen()
-	e.setXrayUp(s, false)
-	e.degradeLocked(s, why)
+// adopt makes r, whose Start succeeded, the session's runner: the loop
+// reads its events from now on. A runner whose Start failed is never
+// adopted, so its queued events (Started, then Exited from its own stop)
+// can never be taken for a recovery.
+func (s *session) adopt(r Runner) {
+	s.runner, s.events = r, r.Events()
 }
 
-// degradeLocked reverts our proxy (if applied) and sets phase Degraded.
-func (e *Engine) degradeLocked(s *session, why *Error) {
+// lostXrayLocked: Xray is down. Revert the system proxy now so the user's
+// internet works without us, and go Degraded. It reports whether the
+// revert failed and must be retried.
+func (e *Engine) lostXrayLocked(s *session, why *Error) bool {
+	e.bumpGen()
+	e.setXrayUp(s, false)
+	return e.degradeLocked(s, why)
+}
+
+// degradeLocked reverts our proxy (if applied, or if an earlier revert
+// failed) and sets phase Degraded. It reports whether the revert failed:
+// the caller schedules a re-check, which retries it until it succeeds, so
+// the system proxy is never left pointing at a dead port (Review Focus 5).
+func (e *Engine) degradeLocked(s *session, why *Error) bool {
 	var warns []*Error
-	if s.applied {
-		var rerr *Error
-		warns, rerr = e.revertLocked()
-		if rerr != nil {
-			warns = append(warns, rerr)
-		}
-		s.applied = false
+	if s.applied || s.revertPending {
+		warns = e.retryRevertLocked(s)
 	}
 	e.update(func(st *State) {
 		st.Phase, st.Err = Degraded, why
@@ -109,6 +117,21 @@ func (e *Engine) degradeLocked(s *session, why *Error) {
 			st.warn(w)
 		}
 	})
+	return s.revertPending
+}
+
+// retryRevertLocked reverts and records the outcome in s.revertPending. It
+// returns the warnings to show; a successful revert clears the
+// proxy_revert_failed warning.
+func (e *Engine) retryRevertLocked(s *session) []*Error {
+	warns, rerr := e.revertLocked()
+	s.applied = false
+	s.revertPending = rerr != nil
+	if rerr != nil {
+		return append(warns, rerr)
+	}
+	e.update(func(st *State) { st.unwarn(CodeProxyRevertFailed) })
+	return warns
 }
 
 // recoverLocked: Xray runs again. Wait until it is ready, re-check the
@@ -137,7 +160,7 @@ func (e *Engine) recoverLocked(s *session) bool {
 		e.degradeLocked(s, newError(CodeProxyApplyFailed, "cannot set the system proxy", err, nil))
 		return true
 	}
-	s.applied = true
+	s.applied, s.revertPending = true, false
 	e.update(func(st *State) {
 		st.Phase, st.Err = Connected, nil
 		st.unwarn(CodeProxyConflict)
@@ -151,7 +174,16 @@ func (e *Engine) onRecheck(s *session) bool {
 		return false
 	}
 	defer e.opMu.Unlock()
-	if !s.xrayUp || s.applied {
+	if s.revertPending {
+		warns := e.retryRevertLocked(s)
+		for _, w := range warns {
+			e.warn(w)
+		}
+		if s.revertPending {
+			return true
+		}
+	}
+	if !s.xrayUp || s.applied || e.conflict != nil {
 		return false
 	}
 	return e.recoverLocked(s)
@@ -195,7 +227,7 @@ func (e *Engine) switchGeo(s *session, fetchErr error) bool {
 	}
 	defer e.opMu.Unlock()
 	if fetchErr != nil {
-		e.warn(newError(WarnGeoFetchFailed, "cannot download the profile's geo files; staying on the bundled set", fetchErr, nil))
+		e.warn(profileError(WarnGeoFetchFailed, "cannot download the profile's geo files; staying on the bundled set", fetchErr, s.prof))
 		return false
 	}
 	if !s.xrayUp || !s.applied {
@@ -204,7 +236,7 @@ func (e *Engine) switchGeo(s *session, fetchErr error) bool {
 	}
 	cfg, _, err := gen.Build(s.in)
 	if err != nil {
-		e.warn(newError(WarnGeoSwitchFailed, "cannot build the profile's config", err, nil))
+		e.warn(profileError(WarnGeoSwitchFailed, "cannot build the profile's config", err, s.prof))
 		return false
 	}
 	dir, perr := e.prepare(s.ctx, cfg, s.pg)
@@ -227,7 +259,8 @@ func (e *Engine) switchGeo(s *session, fetchErr error) bool {
 		_ = r.Stop(stopTimeout)
 		cause = errors.New("tunnel check after the switch: " + string(res.Status))
 	} else {
-		s.runner, s.cfg, s.dir, s.bootstrap = r, cfg, dir, false
+		s.adopt(r)
+		s.cfg, s.dir, s.bootstrap = cfg, dir, false
 		e.update(func(st *State) { st.Check, st.GeoBootstrap = res, false })
 		return false
 	}
@@ -237,11 +270,11 @@ func (e *Engine) switchGeo(s *session, fetchErr error) bool {
 
 	// Roll back to the bootstrap config on its own set.
 	r = e.d.NewRunner(oldDir)
-	s.runner = r
 	if err := r.Start(s.ctx, oldCfg, e.d.Ready(s.in.Ports)); err != nil {
-		e.lostXrayLocked(s, newError(CodeXrayStartFailed, "Xray did not start again after a failed geo switch", err, oldCfg))
-		return false
+		s.events = nil // no runner left to watch; the stopped one stays for teardown
+		return e.lostXrayLocked(s, newError(CodeXrayStartFailed, "Xray did not start again after a failed geo switch", err, oldCfg))
 	}
+	s.adopt(r)
 	e.warn(newError(WarnGeoSwitchFailed, "the profile's geo set did not work; back on the bundled set", cause, cfg))
 	res := e.check(s.ctx, s.in)
 	e.update(func(st *State) { st.Check = res })

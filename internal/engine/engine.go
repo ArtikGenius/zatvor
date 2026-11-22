@@ -170,7 +170,7 @@ type Engine struct {
 	sess       *session // written under opMu and mu
 	netGen     uint64
 	connSeq    uint64
-	connCancel context.CancelFunc
+	connCancel context.CancelCauseFunc
 }
 
 // session is one connected profile. Its fields are guarded by opMu;
@@ -183,12 +183,15 @@ type session struct {
 	prof      profile.Profile
 	in        gen.Input // the profile's own build input (no bootstrap)
 	pg        *assets.ProfileGeo
-	cfg       []byte // config running now
-	dir       string // its geo set
-	runner    Runner
-	bootstrap bool // running the bootstrap config
-	xrayUp    bool // a started Xray is supposed to run
-	applied   bool // the system proxy is ours
+	cfg       []byte               // config running now
+	dir       string               // its geo set
+	runner    Runner               // the adopted runner (Start succeeded)
+	events    <-chan xrayrun.Event // its events; nil when none is adopted
+	bootstrap bool                 // running the bootstrap config
+	xrayUp    bool                 // a started Xray is supposed to run
+	applied   bool                 // the system proxy is ours
+	// revertPending: a revert failed; the re-check timer retries it.
+	revertPending bool
 }
 
 // New returns an Engine in phase Disconnected.
@@ -314,10 +317,30 @@ func (e *Engine) Connect(ctx context.Context, p profile.Profile) error {
 	return e.connect(ctx, p, false)
 }
 
+// Causes of a cancelled connect.
+var (
+	errSuperseded   = errors.New("engine: a newer connect replaced this one")
+	errDisconnected = errors.New("engine: disconnected")
+)
+
+// abortError is the error of a connect whose ctx ended.
+func abortError(ctx context.Context) *Error {
+	if errors.Is(context.Cause(ctx), errSuperseded) {
+		return &Error{Code: CodeSuperseded, Message: "a newer connect replaced this one"}
+	}
+	return newError(CodeCanceled, "connect canceled", context.Cause(ctx), nil)
+}
+
 func (e *Engine) connect(ctx context.Context, p profile.Profile, force bool) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	e.mu.Lock()
+	if e.connCancel != nil {
+		e.connCancel(errSuperseded) // an older connect still in flight
+	}
+	if e.sess != nil {
+		e.sess.cancel() // stop its slow work so opMu comes free
+	}
 	e.connSeq++
 	seq := e.connSeq
 	e.connCancel = cancel
@@ -333,7 +356,9 @@ func (e *Engine) connect(ctx context.Context, p profile.Profile, force bool) err
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
 	if ctx.Err() != nil {
-		return newError(CodeCanceled, "connect canceled", ctx.Err(), nil)
+		err := abortError(ctx)
+		e.update(func(s *State) { s.Phase, s.Err = Failed, err })
+		return err
 	}
 	warns, rerr := e.teardownLocked()
 	if rerr != nil {
@@ -347,9 +372,21 @@ func (e *Engine) connect(ctx context.Context, p profile.Profile, force bool) err
 		}
 	})
 	sess, err := e.establish(ctx, p, force)
+	if err == nil && ctx.Err() != nil {
+		// Cancelled while the last step ran: undo it (revert, then stop).
+		e.setSess(sess)
+		w, rerr := e.teardownLocked()
+		e.conflict = nil
+		for _, x := range append(w, rerr) {
+			if x != nil {
+				e.warn(x)
+			}
+		}
+		err = abortError(ctx)
+	}
 	if err != nil {
 		if ctx.Err() != nil && err.Code != CodeProxyConflict {
-			err = newError(CodeCanceled, "connect canceled", ctx.Err(), nil)
+			err = abortError(ctx)
 		}
 		e.update(func(s *State) { s.Phase, s.Err = Failed, err })
 		return err
@@ -383,13 +420,13 @@ func (e *Engine) establish(ctx context.Context, p profile.Profile, force bool) (
 		SelectedSites: o.SelectedSites, LogLevel: o.LogLevel}
 	cfg, _, err := gen.Build(in)
 	if err != nil {
-		return nil, newError(CodeBuildFailed, "cannot build the Xray config", err, nil)
+		return nil, profileError(CodeBuildFailed, "cannot build the Xray config", err, p)
 	}
 	pg := profileGeo(p)
 	boot := pg != nil && e.d.Assets.NeedsBootstrap(cfg, *pg)
 	if boot {
 		if cfg, _, err = gen.Build(bootstrapInput(in)); err != nil {
-			return nil, newError(CodeBuildFailed, "cannot build the bootstrap config", err, nil)
+			return nil, profileError(CodeBuildFailed, "cannot build the bootstrap config", err, p)
 		}
 	}
 	dir, perr := e.prepare(ctx, cfg, pg)
@@ -406,6 +443,10 @@ func (e *Engine) establish(ctx context.Context, p profile.Profile, force bool) (
 	if res.Status != OK {
 		_ = r.Stop(stopTimeout)
 		return nil, checkError(res)
+	}
+	if ctx.Err() != nil {
+		_ = r.Stop(stopTimeout)
+		return nil, abortError(ctx)
 	}
 	if err := e.d.Proxy.Apply(sysproxy.Ours(pp.Mixed), force); err != nil {
 		if ce, ok := asConflict(err); ok {
@@ -424,9 +465,11 @@ func (e *Engine) establish(ctx context.Context, p profile.Profile, force bool) (
 		return nil, newError(CodeProxyApplyFailed, "cannot set the system proxy", err, nil)
 	}
 	sctx, scancel := context.WithCancel(context.Background())
-	return &session{ctx: sctx, cancel: scancel, done: make(chan struct{}),
-		prof: p, in: in, pg: pg, cfg: cfg, dir: dir, runner: r,
-		bootstrap: boot, xrayUp: true, applied: true}, nil
+	s := &session{ctx: sctx, cancel: scancel, done: make(chan struct{}),
+		prof: p, in: in, pg: pg, cfg: cfg, dir: dir,
+		bootstrap: boot, xrayUp: true, applied: true}
+	s.adopt(r)
+	return s, nil
 }
 
 // prepare builds the geo set for cfg and validates cfg against it.
@@ -495,7 +538,7 @@ func (e *Engine) teardownLocked() ([]*Error, *Error) {
 func (e *Engine) Disconnect(ctx context.Context) error {
 	e.mu.Lock()
 	if e.connCancel != nil {
-		e.connCancel()
+		e.connCancel(errDisconnected)
 	}
 	if e.sess != nil {
 		e.sess.cancel()

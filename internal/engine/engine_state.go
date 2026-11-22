@@ -1,10 +1,14 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
+	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/ArtikGenius/zatvor/internal/gen"
+	"github.com/ArtikGenius/zatvor/internal/profile"
 	"github.com/ArtikGenius/zatvor/internal/sysproxy"
 	"github.com/ArtikGenius/zatvor/internal/validate"
 )
@@ -29,6 +33,7 @@ const (
 // Error codes. They are stable strings for the API and the UI.
 const (
 	CodeCanceled          = "canceled"
+	CodeSuperseded        = "superseded" // a newer Connect replaced this one
 	CodePortsUnavailable  = "ports_unavailable"
 	CodeBuildFailed       = "build_failed"
 	CodeGeoPrepareFailed  = "geo_prepare_failed"
@@ -88,6 +93,31 @@ func newError(code, msg string, cause error, cfg []byte) *Error {
 		msg = validate.Scrub(msg, cfg)
 	}
 	return &Error{Code: code, Message: msg}
+}
+
+// profileError is newError for causes that may quote the profile (a build
+// error, a geo download error): every secret value of p is scrubbed, and a
+// *url.Error is reduced to its cause so no URL is quoted. If p cannot be
+// serialized for scrubbing, the cause is left out.
+func profileError(code, msg string, cause error, p profile.Profile) *Error {
+	var ue *url.Error
+	if errors.As(cause, &ue) && ue.Err != nil {
+		cause = ue.Err
+	}
+	secrets, err := json.Marshal(p)
+	if err != nil {
+		return &Error{Code: code, Message: msg}
+	}
+	if pg := profileGeo(p); pg != nil && cause != nil {
+		m := cause.Error()
+		for _, u := range []string{pg.GeoIPURL, pg.GeoSiteURL} {
+			if u != "" {
+				m = strings.ReplaceAll(m, u, "<geo url>")
+			}
+		}
+		cause = errors.New(m)
+	}
+	return newError(code, msg, cause, secrets)
 }
 
 func conflictError(code string, ce *sysproxy.ConflictError) *Error {
