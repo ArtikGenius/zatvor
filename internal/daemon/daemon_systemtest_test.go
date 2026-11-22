@@ -888,6 +888,9 @@ func (f savedFile) restore() error {
 // prints.
 const userPrompt = "zatvor-user-prompt>"
 
+// backupSuffix names the one-time copy devtools keeps of a file it edits.
+const backupSuffix = ".zatvor.bak"
+
 // TestLiveDevToolsOnRunner: dev tools on the runner's real profile files
 // (a disposable runner). The PowerShell profile and .bashrc are first
 // seeded with user content (BOM, CRLF, the user's own prompt). Windows
@@ -928,9 +931,12 @@ func TestLiveDevToolsOnRunner(t *testing.T) {
 	}
 	var runner []savedFile // as the runner had them: put back in t.Cleanup
 	for _, p := range paths {
-		f := saveFile(t, p)
-		t.Logf("runner's %s: exists %v, %d bytes", f.path, f.exists, len(f.data))
-		runner = append(runner, f)
+		// Enable keeps a one-time copy of an existing file next to it.
+		for _, p := range []string{p, p + backupSuffix} {
+			f := saveFile(t, p)
+			t.Logf("runner's %s: exists %v, %d bytes", f.path, f.exists, len(f.data))
+			runner = append(runner, f)
+		}
 	}
 	t.Cleanup(func() {
 		for _, f := range runner {
@@ -1015,6 +1021,11 @@ func TestLiveDevToolsOnRunner(t *testing.T) {
 	for _, f := range files {
 		if ok, err := f.same(); err != nil || !ok {
 			t.Errorf("%s differs from its saved copy after Disable (err %v)", f.path, err)
+		}
+	}
+	for p, body := range seeds {
+		if b, err := os.ReadFile(p + backupSuffix); err != nil || string(b) != body {
+			t.Errorf("backup %s = %d bytes, %v; want the user's %d bytes", p+backupSuffix, len(b), err, len(body))
 		}
 	}
 	e.mustCall("POST", "/v1/disconnect", nil, http.StatusOK)
