@@ -18,6 +18,15 @@ golang.org/x/sys (BSD-3-Clause)
   https://go.googlesource.com/sys
   Copyright 2009 The Go Authors. Go module, compiled into Zatvor binaries.
 
+xray-core common/geodata (MPL-2.0)
+  https://github.com/XTLS/Xray-core
+  Go module, compiled into Zatvor binaries: the geosite/geoip protobuf types
+  used to merge geo data files.
+
+google.golang.org/protobuf (BSD-3-Clause)
+  https://github.com/protocolbuffers/protobuf-go
+  Copyright 2018 The Go Authors. Go module, compiled into Zatvor binaries.
+
 Prototype-only components (proto/tun, stage 0c; not part of any Zatvor
 release unless ADR 0003 picks variant B):
 
