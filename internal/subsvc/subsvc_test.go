@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -200,9 +201,13 @@ func TestScheduledBackoffCapped(t *testing.T) {
 	e.clk.advance(time.Hour) // due now
 	want := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute,
 		16 * time.Minute, 32 * time.Minute, time.Hour, time.Hour}
+	stored0, _ := e.st.Load()
 	for i, delay := range want {
 		before := p.hits.Load()
 		e.svc.runDue(ctx)
+		if cur, _ := e.st.Load(); e.st.saves != 0 || !reflect.DeepEqual(cur, stored0) {
+			t.Fatalf("step %d: failing scheduled update touched the store", i)
+		}
 		if p.hits.Load() != before+1 {
 			t.Fatalf("step %d: expected one request, got %d", i, p.hits.Load()-before)
 		}
@@ -357,7 +362,7 @@ func TestNoURLInErrorsOrList(t *testing.T) {
 		if err == nil {
 			t.Fatal("want error")
 		}
-		for _, bad := range []string{"SECRET", p.URL, "127.0.0.1", "machine-secret-id", hwid.ID("machine-secret-id", p.URL)} {
+		for _, bad := range []string{"SECRET", p.URL, "127.0.0.1", "machine-secret-id", hwid.ID("machine-secret-id", strings.TrimPrefix(p.URL, "http://"))} {
 			if strings.Contains(err.Error(), bad) {
 				t.Fatalf("error leaks %q: %v", bad, err)
 			}
@@ -406,10 +411,12 @@ func TestStoreSavedOnlyOnSuccess(t *testing.T) {
 }
 
 func TestConcurrentUpdateOneRequest(t *testing.T) {
+	var hold atomic.Bool
 	release := make(chan struct{})
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hits.Add(1) > 1 {
+		hits.Add(1)
+		if hold.Load() {
 			<-release
 		}
 		_, _ = w.Write([]byte(nodeA))
@@ -418,6 +425,7 @@ func TestConcurrentUpdateOneRequest(t *testing.T) {
 	e := newEnv(t, nil)
 	sub := e.seed(t, srv.URL+"/s", 0)
 	hits.Store(0)
+	hold.Store(true)
 	var wg sync.WaitGroup
 	for range 5 {
 		wg.Add(1)
@@ -444,11 +452,12 @@ func TestRemoveSetUAEvents(t *testing.T) {
 	if got, _ := e.st.Load(); got[0].UA != "X/1" {
 		t.Fatal("ua")
 	}
-	_, _ = e.svc.Update(context.Background(), sub.ID, User)
-	_, _ = e.svc.Update(context.Background(), sub.ID, User)
+	_, _ = e.svc.Update(context.Background(), sub.ID, User) // Updated
+	p.status.Store(500)
+	_, _ = e.svc.Update(context.Background(), sub.ID, User) // Failed: the latest
 	select {
 	case ev := <-e.svc.Events():
-		if ev.Kind != Updated || ev.ID != sub.ID {
+		if ev.Kind != Failed || ev.ID != sub.ID || ev.Code != CodeHTTPStatus {
 			t.Fatalf("%+v", ev)
 		}
 	default:
@@ -473,5 +482,242 @@ func TestRunStopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not stop")
+	}
+}
+
+func TestScheduledDeviceLimitKeepsProfiles(t *testing.T) {
+	p := newProvider(t, nodeA)
+	e := newEnv(t, nil)
+	e.seed(t, p.URL+"/s", time.Hour)
+	e.tun.up.Store(true)
+	e.tun.dial = (&net.Dialer{}).DialContext
+	before, _ := e.st.Load()
+	p.hits.Store(0)
+	p.extra.Store(http.Header{"X-Hwid-Limit": {"true"}})
+	p.body.Store("")
+	e.clk.advance(2 * time.Hour)
+	e.svc.runDue(context.Background())
+	e.svc.runDue(context.Background()) // within the backoff: no burst
+	after, _ := e.st.Load()
+	if p.hits.Load() != 1 || e.st.saves != 0 || !reflect.DeepEqual(before, after) {
+		t.Fatalf("hits=%d saves=%d", p.hits.Load(), e.st.saves)
+	}
+}
+
+func TestExistingProfileKeepsOldVersionWhenInvalid(t *testing.T) {
+	p := newProvider(t, nodeA+nodeB)
+	var bad atomic.Bool
+	e := newEnv(t, func(d *Deps) {
+		d.BuildCheck = func(pr profile.Profile) error {
+			if bad.Load() && pr.Name == "beta2" {
+				return errors.New("broken")
+			}
+			return nil
+		}
+	})
+	sub, _, err := e.svc.Add(context.Background(), p.URL+"/s", "")
+	if err != nil || len(sub.Profiles) != 2 {
+		t.Fatal(err)
+	}
+	bad.Store(true)
+	p.body.Store(nodeA + strings.Replace(nodeB, "#beta", "#beta2", 1))
+	diff, err := e.svc.Update(context.Background(), sub.ID, User)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := e.st.Load()
+	if len(stored[0].Profiles) != 2 || stored[0].Profiles[1].Name != "beta" {
+		t.Fatalf("old version lost: %+v", stored[0].Profiles)
+	}
+	if len(diff.Removed) != 0 || len(diff.Changed) != 0 || len(diff.Added) != 0 {
+		t.Fatalf("%+v", diff)
+	}
+	if len(diff.Warnings) != 2 || diff.Warnings[0] != "profile_kept_old: beta2" {
+		t.Fatalf("%v", diff.Warnings)
+	}
+	// only a changed-and-broken old profile left: kept-old counts as valid
+	p.body.Store(strings.Replace(nodeB, "#beta", "#beta2", 1))
+	if _, err := e.svc.Update(context.Background(), sub.ID, User); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetUADuringFetchSurvives(t *testing.T) {
+	release := make(chan struct{})
+	var hold atomic.Bool
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if hold.Load() {
+			<-release
+		}
+		_, _ = w.Write([]byte(nodeA))
+	}))
+	defer srv.Close()
+	e := newEnv(t, nil)
+	sub := e.seed(t, srv.URL+"/s", 0)
+	hold.Store(true)
+	done := make(chan error, 1)
+	go func() { _, err := e.svc.Update(context.Background(), sub.ID, User); done <- err }()
+	for hits.Load() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := e.svc.SetUA(sub.ID, "Mid/1"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.st.Load()
+	if got[0].UA != "Mid/1" {
+		t.Fatalf("UA lost: %q", got[0].UA)
+	}
+}
+
+type blockFetcher struct {
+	calls   atomic.Int32
+	release chan struct{}
+	inner   Fetcher
+	hold    atomic.Bool
+}
+
+func (b *blockFetcher) Fetch(ctx context.Context, r subfetch.Request) (subfetch.Result, error) {
+	b.calls.Add(1)
+	if b.hold.Load() {
+		<-b.release
+	}
+	return b.inner.Fetch(ctx, r)
+}
+
+func TestButtonNeverJoinsScheduledFlight(t *testing.T) {
+	p := newProvider(t, nodeA)
+	bf := &blockFetcher{release: make(chan struct{}), inner: subfetch.New(5 * time.Second)}
+	e := newEnv(t, func(d *Deps) { d.Fetcher = bf })
+	sub := e.seed(t, p.URL+"/s", 0)
+	bf.calls.Store(0)
+	bf.hold.Store(true)
+	e.tun.up.Store(true)
+	e.tun.dial = (&net.Dialer{}).DialContext
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = e.svc.Update(context.Background(), sub.ID, Scheduled) }()
+	for bf.calls.Load() < 1 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	go func() { defer wg.Done(); _, _ = e.svc.Update(context.Background(), sub.ID, User) }()
+	for bf.calls.Load() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(bf.release)
+	wg.Wait()
+}
+
+func TestCancelOneCallerDoesNotFailOthers(t *testing.T) {
+	var hold atomic.Bool
+	release := make(chan struct{})
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if hold.Load() {
+			<-release
+		}
+		_, _ = w.Write([]byte(nodeA))
+	}))
+	defer srv.Close()
+	e := newEnv(t, nil)
+	sub := e.seed(t, srv.URL+"/s", 0)
+	hits.Store(0)
+	hold.Store(true)
+	c1, cancel1 := context.WithCancel(context.Background())
+	res1 := make(chan error, 1)
+	go func() { _, err := e.svc.Update(c1, sub.ID, User); res1 <- err }()
+	for hits.Load() < 1 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	res2 := make(chan error, 1)
+	go func() { _, err := e.svc.Update(context.Background(), sub.ID, User); res2 <- err }()
+	time.Sleep(50 * time.Millisecond)
+	cancel1()
+	if err := <-res1; err == nil {
+		t.Fatal("canceled caller should return an error")
+	}
+	close(release)
+	if err := <-res2; err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("hits %d", hits.Load())
+	}
+}
+
+func TestStartTrigger(t *testing.T) {
+	p := newProvider(t, nodeA)
+	e := newEnv(t, nil)
+	sub := e.seed(t, p.URL+"/s", time.Hour)
+	e.clk.advance(5 * time.Hour) // due
+	p.hits.Store(0)
+	p.status.Store(500)
+	// Start without a tunnel: one direct request, no retry
+	if _, err := e.svc.Update(context.Background(), sub.ID, Start); err == nil {
+		t.Fatal("want failure")
+	}
+	e.tun.up.Store(true)
+	e.tun.dial = (&net.Dialer{}).DialContext
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.svc.Run(ctx); close(done) }()
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	<-done
+	if p.hits.Load() != 1 {
+		t.Fatalf("Start then Run made %d requests, want 1", p.hits.Load())
+	}
+	// Start through the tunnel
+	var dials atomic.Int32
+	e.tun.dial = func(ctx context.Context, n, a string) (net.Conn, error) {
+		dials.Add(1)
+		return (&net.Dialer{}).DialContext(ctx, n, a)
+	}
+	p.status.Store(200)
+	if _, err := e.svc.Update(context.Background(), sub.ID, Start); err != nil || dials.Load() != 1 {
+		t.Fatal(err, dials.Load())
+	}
+}
+
+func TestIntervalDefaultsAndMinimum(t *testing.T) {
+	if interval(0) != 24*time.Hour || interval(time.Minute) != time.Hour || interval(6*time.Hour) != 6*time.Hour {
+		t.Fatal("interval rules")
+	}
+	p := newProvider(t, nodeA)
+	e := newEnv(t, nil)
+	e.seed(t, p.URL+"/s", 0) // default 24 h
+	e.tun.up.Store(true)
+	e.tun.dial = (&net.Dialer{}).DialContext
+	p.hits.Store(0)
+	e.clk.advance(23 * time.Hour)
+	e.svc.runDue(context.Background())
+	if p.hits.Load() != 0 {
+		t.Fatal("ran before 24 h")
+	}
+	e.clk.advance(time.Hour)
+	e.svc.runDue(context.Background())
+	if p.hits.Load() != 1 {
+		t.Fatal("did not run at 24 h")
+	}
+	// a 1 minute provider interval is raised to 1 h
+	subs, _ := e.st.Load()
+	subs[0].Info.UpdateInterval = time.Minute
+	_ = e.st.Save(subs)
+	p.hits.Store(0)
+	e.clk.advance(30 * time.Minute)
+	e.svc.runDue(context.Background())
+	if p.hits.Load() != 0 {
+		t.Fatal("interval below 1 h honored")
+	}
+	e.clk.advance(30 * time.Minute)
+	e.svc.runDue(context.Background())
+	if p.hits.Load() != 1 {
+		t.Fatal("did not run at 1 h")
 	}
 }

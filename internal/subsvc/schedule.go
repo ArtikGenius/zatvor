@@ -92,6 +92,7 @@ func (s *Service) runDue(ctx context.Context) {
 	subs, err := s.d.Store.Load()
 	s.mu.Unlock()
 	if err != nil {
+		s.logf("subsvc: cannot read the profile store")
 		return
 	}
 	for _, sub := range subs {

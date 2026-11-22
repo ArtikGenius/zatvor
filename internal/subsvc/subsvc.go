@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"net/url"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 
@@ -78,8 +79,10 @@ type Tunnel interface {
 
 // Deps are the Service's collaborators.
 type Deps struct {
-	Fetcher   Fetcher
-	Store     Store
+	Fetcher Fetcher
+	Store   Store
+	// Tunnel must be a nil interface, not a typed nil pointer, when there is
+	// no engine.
 	Tunnel    Tunnel // nil: never connected
 	MachineID string
 	Device    hwid.Device
@@ -174,21 +177,36 @@ func (s *Service) Add(ctx context.Context, rawURL, ua string) (profile.Subscript
 	return redacted(next), diff, nil
 }
 
-// Update refreshes one subscription. Concurrent calls for the same id share
-// one request. On any failure the stored subscription is left untouched.
+// fetchTimeout bounds a shared flight, which no single caller's cancel may kill.
+const fetchTimeout = 30 * time.Second
+
+type flightResult struct {
+	diff profile.Diff
+	err  error
+}
+
+// Update refreshes one subscription. Concurrent calls of the same kind
+// (scheduled, or user/start) for the same id share one request; a button
+// press never joins a scheduled flight. On any failure the stored
+// subscription is left untouched.
 func (s *Service) Update(ctx context.Context, id string, trig Trigger) (profile.Diff, error) {
-	v, err, _ := s.flight.Do(id, func() (any, error) {
-		d, err := s.update(ctx, id, trig)
-		if err != nil {
-			return d, err
-		}
-		return d, nil
-	})
-	d, _ := v.(profile.Diff)
-	if err != nil {
-		return profile.Diff{}, err
+	key := id + "/user"
+	if trig == Scheduled {
+		key = id + "/scheduled"
 	}
-	return d, nil
+	ch := s.flight.DoChan(key, func() (any, error) {
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+		defer cancel()
+		d, err := s.update(fctx, id, trig)
+		return flightResult{d, err}, nil
+	})
+	select {
+	case <-ctx.Done():
+		return profile.Diff{}, fail(CodeNetwork, "the update was canceled")
+	case out := <-ch:
+		r := out.Val.(flightResult)
+		return r.diff, r.err
+	}
 }
 
 func (s *Service) update(ctx context.Context, id string, trig Trigger) (profile.Diff, error) {
@@ -207,6 +225,13 @@ func (s *Service) update(ctx context.Context, id string, trig Trigger) (profile.
 	if old == nil {
 		return profile.Diff{}, fail(CodeNotFound, "no such subscription")
 	}
+	if trig == Start {
+		// Record the attempt: the scheduler must not fire a second request
+		// right after it (a failed Start is not retried before the interval).
+		s.mu.Lock()
+		s.sched[id] = &backoff{next: s.d.Clock.Now().Add(interval(old.Info.UpdateInterval))}
+		s.mu.Unlock()
+	}
 	next, diff, ferr := s.fetchApply(ctx, *old, trig)
 	if ferr != nil {
 		s.events.publish(Event{Kind: Failed, ID: id, Code: codeOf(ferr)})
@@ -220,10 +245,17 @@ func (s *Service) update(ctx context.Context, id string, trig Trigger) (profile.
 	}
 	found := false
 	for i := range subs {
-		if subs[i].ID == id {
-			subs[i] = next
-			found = true
+		if subs[i].ID != id {
+			continue
 		}
+		found = true
+		// Only the fetched fields: a SetUA made during the fetch survives.
+		cur := &subs[i]
+		cur.Profiles = next.Profiles
+		cur.Info = next.Info
+		cur.Title = next.Title
+		cur.ProviderRouting = next.ProviderRouting
+		cur.LastGood = next.LastGood
 	}
 	if !found {
 		return profile.Diff{}, fail(CodeNotFound, "no such subscription")
@@ -302,40 +334,44 @@ func (s *Service) fetchApply(ctx context.Context, old profile.Subscription, trig
 	return next, diff, nil
 }
 
-// dropInvalid removes profiles that fail BuildCheck, naming them in
-// diff.Warnings by title only.
+// dropInvalid handles profiles that fail BuildCheck. A new one is dropped
+// (warning profile_invalid); one that already worked keeps its old version
+// (warning profile_kept_old). Warnings carry the title only.
 func (s *Service) dropInvalid(old, next profile.Subscription, diff profile.Diff) (profile.Subscription, profile.Diff, error) {
+	oldByID := map[string]profile.Profile{}
+	for _, p := range old.Profiles {
+		oldByID[p.ID] = p
+	}
 	var keep []profile.Profile
 	dropped := map[string]bool{}
 	for _, p := range next.Profiles {
-		if err := s.d.BuildCheck(p); err != nil {
-			dropped[p.ID] = true
-			name := p.Name
-			if name == "" {
-				name = p.ID
-			}
-			diff.Warnings = append(diff.Warnings, "profile_invalid: "+name)
+		if err := s.d.BuildCheck(p); err == nil {
+			keep = append(keep, p)
 			continue
 		}
-		keep = append(keep, p)
+		name := p.Name
+		if name == "" {
+			name = p.ID
+		}
+		if prev, existed := oldByID[p.ID]; existed {
+			if err := s.d.BuildCheck(prev); err == nil {
+				keep = append(keep, prev)
+				diff.Warnings = append(diff.Warnings, "profile_kept_old: "+name)
+				dropped[p.ID] = true
+				continue
+			}
+		}
+		diff.Warnings = append(diff.Warnings, "profile_invalid: "+name)
+		dropped[p.ID] = true
+		if _, existed := oldByID[p.ID]; existed {
+			diff.Removed = append(diff.Removed, p.ID)
+		}
 	}
 	if len(keep) == 0 {
 		return old, profile.Diff{}, fail(CodeInvalidProfiles, "none of the profiles in the subscription is valid")
 	}
-	if len(dropped) == 0 {
-		return next, diff, nil
-	}
-	oldIDs := map[string]bool{}
-	for _, p := range old.Profiles {
-		oldIDs[p.ID] = true
-	}
 	diff.Added = without(diff.Added, dropped)
 	diff.Changed = without(diff.Changed, dropped)
-	for _, p := range old.Profiles {
-		if dropped[p.ID] {
-			diff.Removed = append(diff.Removed, p.ID)
-		}
-	}
 	next.Profiles = keep
 	return next, diff, nil
 }
