@@ -118,8 +118,8 @@ control from the page; then a normal start must open the popup. Screenshots go t
 
 ### Second round
 
-Download `proto-ui-tauri-macos-universal` and `proto-ui-wails-macos-universal` from the latest green
-proto-ui run on `stage-0c`, unzip (the inner zip too), replace the apps in /Applications, and for each app:
+Download `proto-ui-tauri-macos-universal` and `proto-ui-wails-macos-universal` from proto-ui run
+44969810051 (green, `uicheck.sh` passed for both on the macOS runner), unzip (the inner zip too), replace the apps in /Applications, and for each app:
 
 1. **Start:** the popup opens by itself near the top right within about 2 s. Is an iris icon in the menu
    bar? If not, the notch is hiding it (note that).
