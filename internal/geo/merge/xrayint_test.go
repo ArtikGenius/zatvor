@@ -18,7 +18,8 @@ const xrayintCfg = `{
   "outbounds": [{"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],
   "routing": {"rules": [
     {"type":"field","domain":["geosite:google","geosite:win-spy","geosite:category-ru@cn"],"outboundTag":"block"},
-    {"type":"field","ip":["geoip:ru","geoip:private"],"outboundTag":"direct"}
+    {"type":"field","ip":["geoip:ru","geoip:private"],"outboundTag":"direct"},
+    {"type":"field","ip":["!geoip:cn","geoip:!by"],"outboundTag":"block"}
   ]}
 }`
 
@@ -31,7 +32,7 @@ func TestOutputLoadsInXray(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := writeSource(t, "roscomvpn", map[string]string{"GOOGLE": "google.example", "WIN-SPY": "spy.example"}, map[string][4]byte{"RU": {198, 18, 0, 1}})
+	p := writeSource(t, "roscomvpn", map[string]string{"GOOGLE": "google.example", "WIN-SPY": "spy.example"}, map[string][4]byte{"RU": {198, 18, 0, 1}, "CN": {198, 18, 0, 3}, "BY": {198, 18, 0, 4}})
 	f := writeSource(t, "v2fly", map[string]string{"GOOGLE": "x.example", "CATEGORY-RU": "ru.example"}, map[string][4]byte{"PRIVATE": {198, 18, 0, 2}})
 	dst := t.TempDir()
 	if _, err := Merge(dst, site, ip, p, f); err != nil {

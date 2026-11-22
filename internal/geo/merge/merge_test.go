@@ -147,6 +147,25 @@ func TestCaseAndAttributeSuffix(t *testing.T) {
 	}
 }
 
+// A tag handed over in negated form ("!cn", from "geoip:!cn") is the tag cn.
+func TestNegatedTag(t *testing.T) {
+	p := writeSource(t, "roscomvpn", map[string]string{"ads": "a"}, map[string][4]byte{"CN": {1, 2, 3, 4}})
+	f := writeSource(t, "v2fly", nil, nil)
+	res, err := Merge(t.TempDir(), []string{"!ads"}, []string{"!cn", "!!CN"}, p, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readIP(t, res.GeoIP); len(got) != 1 || got["CN"] == nil {
+		t.Errorf("ip = %v", got)
+	}
+	if got := readSite(t, res.GeoSite); !reflect.DeepEqual(got, map[string][]string{"ads": {"a"}}) {
+		t.Errorf("site = %v", got)
+	}
+	if res.From["geoip:cn"] != "roscomvpn" || res.From["geosite:ads"] != "roscomvpn" {
+		t.Errorf("From = %v", res.From)
+	}
+}
+
 func TestNeedsOnlyRequested(t *testing.T) {
 	p := writeSource(t, "roscomvpn", map[string]string{"A": "a", "B": "b", "C": "c"}, map[string][4]byte{"X": {1, 0, 0, 0}, "Y": {2, 0, 0, 0}})
 	f := writeSource(t, "v2fly", map[string]string{"D": "d", "E": "e"}, map[string][4]byte{"Z": {3, 0, 0, 0}})

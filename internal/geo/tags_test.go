@@ -61,3 +61,45 @@ func TestNeededTagsBadJSON(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+// Xray reverses an IP rule on a leading "!" (any number) and on "!" before
+// the code (common/geodata/rule_parser.go cutReversePrefix).
+func TestNeededTagsNegated(t *testing.T) {
+	cfg := `{"routing":{"rules":[
+	  {"ip":["!geoip:cn","geoip:!ru","!!geoip:!!by","!geoip:private"]},
+	  {"domain":["!geosite:ads"]}
+	]},"dns":{"servers":[{"address":"1.1.1.1","expectIPs":["geoip:!ir"]}]}}`
+	site, ip, err := NeededTags([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"ads"}; !reflect.DeepEqual(site, want) {
+		t.Errorf("site = %v, want %v", site, want)
+	}
+	if want := []string{"by", "cn", "ir", "private", "ru"}; !reflect.DeepEqual(ip, want) {
+		t.Errorf("ip = %v, want %v", ip, want)
+	}
+	if _, _, err := NeededTags([]byte(`{"routing":{"rules":[{"ip":["!ext:geoip.dat:cn"]}]}}`)); !errors.Is(err, ErrExtRef) {
+		t.Errorf("negated ext: err = %v, want ErrExtRef", err)
+	}
+}
+
+// Every config field Xray reads geo rules from (infra/conf router.go and
+// dns.go) is collected.
+func TestNeededTagsAllFields(t *testing.T) {
+	cfg := `{"routing":{"rules":[
+	  {"domains":["geosite:a"]},{"source":["geoip:s1"]},{"sourceIP":["geoip:s2"]},{"localIP":["geoip:l"]}
+	]},"dns":{"hosts":{"geosite:h":"127.0.0.1","example.com":"1.2.3.4"},"servers":[
+	  {"address":"1.1.1.1","expectedIPs":["geoip:e"],"unexpectedIPs":["geoip:u"]}
+	]}}`
+	site, ip, err := NeededTags([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"a", "h"}; !reflect.DeepEqual(site, want) {
+		t.Errorf("site = %v, want %v", site, want)
+	}
+	if want := []string{"e", "l", "s1", "s2", "u"}; !reflect.DeepEqual(ip, want) {
+		t.Errorf("ip = %v, want %v", ip, want)
+	}
+}

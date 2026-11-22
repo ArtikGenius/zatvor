@@ -42,8 +42,8 @@ func (e *MissingTagError) Error() string {
 var afterTemps func() error
 
 // Merge writes geosite.dat and geoip.dat into dstDir containing only the
-// requested tags. Tags match case-insensitively and a "@attr" suffix is
-// ignored; the output keeps the source's own spelling. Existing output is
+// requested tags. Tags match case-insensitively and a leading "!" and a
+// "@attr" suffix are ignored; the output keeps the source's own spelling. Existing output is
 // replaced only after both new files are complete.
 func Merge(dstDir string, site, ip []string, primary, fallback Source) (Result, error) {
 	res := Result{
@@ -137,7 +137,8 @@ func pick(kind string, want []string, srcs []Source, names []string, from map[st
 	var pending []need
 	seen := map[string]bool{}
 	for _, t := range want {
-		base, _, _ := strings.Cut(t, "@")
+		// "!" (Xray's reverse match) is not part of the tag.
+		base, _, _ := strings.Cut(strings.TrimLeft(t, "!"), "@")
 		k := strings.ToUpper(base)
 		if k == "" || seen[k] {
 			continue
