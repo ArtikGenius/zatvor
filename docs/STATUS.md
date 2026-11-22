@@ -84,13 +84,14 @@ Deferred minor review findings from 1a:
 - gen: catch-all detection ignores `port: "0-65535"` and `network: "tcp"` forms; non-object provider routing is replaced instead of rejected; a provider inbound tagged `api`, `probe` or `devtools` matches our reserved inbound without a warning; presets emit no `dns` section (add in 1b if needed).
 - geo/merge: duplicate load closures; no directory fsync after renames; only the first missing tag is reported; an `@attr`-only tag is skipped silently; no rename-failure test. The two-rename window can leave a mixed pair after a crash: 1b merges into a fresh directory and swaps it.
 - validate: output buffer is unbounded before the 4 KB cap; the `xray -test` path is covered only under the `xrayint` tag; protocol maps need a drift check on every Xray pin bump (add to the pin-bump checklist); scrubbing also masks non-secret routing values such as `geosite:cn`; secrets shorter than 6 characters (REALITY shortId) are not masked; a message for invalid JSON is not scrubbed.
-- xrayrun: backoff steps 16 s and 30 s are unreachable; `TestBackoffWindowSlides` asserts nothing (the spawn-failure hang was fixed in 8528d14); duplicated test helpers; a Stop error is ignored in Latency; latency fails for all outbounds when one is invalid (1b falls back to one run per outbound).
+- xrayrun: Stop's post-wait writes `running`/`cur` without a generation check (Stop racing a newer Start); backoff steps 16 s and 30 s are unreachable; `TestBackoffWindowSlides` asserts nothing (the spawn-failure hang was fixed in 8528d14); duplicated test helpers; a Stop error is ignored in Latency; latency fails for all outbounds when one is invalid (1b falls back to one run per outbound).
+- Follow-ups promised by the README: 1b creates new subscriptions with `SendDevice=true` (ADR 0008; the code zero value is false, `internal/profile/profile.go:61`); 1c adds the "send device info" switch in subscription settings; 1b adds the connectivity check through the tunnel.
 - e2e: server rules are not strictly narrow (add a trailing block-all); one assertion depends on exact spacing; the log-ready check matches any " started"; port races; the access log is proof only on Windows and macOS.
 - secretscan fix: a mixed-case allow entry; `enable-hooks.sh` does not use `--local`; `TestRunStagedExitCode` does not cover the allow path.
 
 ## Next: stage 1b and 1c
 
-1b: zatvord on Windows (state and local API, single instance, journal and revert, system proxy, port picker, key providers, scheduled updates, geo bootstrap, dev-tool routing, supervisor, diagnostics, CLI). 1c: Tauri tray and panel, first run, MSI, stage 1 acceptance from Artur's home internet.
+1b: new subscriptions get `SendDevice=true` and the connectivity check through the tunnel is added; zatvord on Windows (state and local API, single instance, journal and revert, system proxy, port picker, key providers, scheduled updates, geo bootstrap, dev-tool routing, supervisor, diagnostics, CLI). 1c: Tauri tray and panel, first run, MSI, stage 1 acceptance from Artur's home internet.
 
 Stage 1 overall:
 

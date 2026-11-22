@@ -32,6 +32,8 @@ Nothing in 1a.
 
 - 1b: zatvord on Windows (state and local API, journal and revert, system proxy, key providers, scheduled updates, geo bootstrap, supervisor, diagnostics, CLI). System changes run only in `systemtest` on CI Windows runners or on your PC in safe mode.
 - 1c: tray and panel, first run, MSI. Stage 1 acceptance from your home internet: your test subscription imports; Hysteria2-DNS, XHTTP and Vision connect.
+- 1b: new subscriptions are created with `SendDevice=true` (ADR 0008; the code default is false). 1b also adds the connectivity check through the tunnel that the README mentions.
+- 1c: the "send device info" switch in subscription settings.
 - Mac tray check and the Windows-taskbar tray check (see [docs/STATUS.md](../STATUS.md)).
 - Deferred review findings: "Deferred minor review findings from 1a" in [docs/STATUS.md](../STATUS.md).
 
