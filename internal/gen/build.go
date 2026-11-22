@@ -62,7 +62,9 @@ var logLevels = map[string]bool{"debug": true, "info": true, "warning": true, "e
 // direct and block. A full JSON keeps the provider's outbounds; with source
 // Provider it also keeps routing (our rules come first, then the provider's
 // rules in their own order and content, other routing keys untouched) and
-// dns exactly, while its inbounds are replaced by ours.
+// dns exactly, while its inbounds are replaced by ours. Its api section is
+// replaced by ours and its metrics section is removed (a Report warning
+// names it), so no provider section opens a listener.
 //
 // Inbound tags: our system-proxy inbound is tagged "mixed-in", except that
 // it takes the tag of the first provider inbound whose protocol is socks,
@@ -355,6 +357,15 @@ func buildConfig(in Input) (*ojson.Object, Report, error) {
 	if err != nil {
 		return nil, Report{}, err
 	}
+	// Root sections that open a listener of their own: only ours may.
+	// api is replaced below; metrics would serve expvar and pprof.
+	for _, k := range listenerSections {
+		if _, ok := root.Get(k); ok {
+			root.Delete(k)
+			rep.Warnings = append(rep.Warnings, fmt.Sprintf(
+				"provider %q section removed: it opens a listener Zatvor does not control", k))
+		}
+	}
 	root.Set("log", logSection(logLevel(in)))
 	root.Set("api", apiSection())
 	root.Set("stats", &ojson.Object{})
@@ -363,6 +374,12 @@ func buildConfig(in Input) (*ojson.Object, Report, error) {
 	root.Set("routing", rt)
 	return root, rep, nil
 }
+
+// listenerSections are provider root sections that make Xray listen on an
+// address outside our inbounds (Xray 26.11: metrics.listen is an HTTP server
+// with expvar and pprof). api also has a listen field, but it is always
+// replaced by ours.
+var listenerSections = []string{"metrics"}
 
 func reservedTag(t string) bool {
 	return t == TagAPI || t == TagProbe || t == TagDevTools

@@ -630,3 +630,44 @@ func TestLogLevel(t *testing.T) {
 		t.Fatal("log level")
 	}
 }
+
+// Xray serves expvar and pprof on metrics.listen; a provider must not open
+// a listener we did not create. api is always ours (no listen of its own).
+func TestProviderMetricsRemoved(t *testing.T) {
+	for _, src := range []profile.Source{{}, {Kind: profile.SourcePreset, Preset: profile.PresetAllProxy}} {
+		cfg := `{"metrics":{"listen":"0.0.0.0:9000","tag":"m"},
+		"api":{"tag":"papi","listen":"0.0.0.0:9001","services":["HandlerService"]},
+		"outbounds":[{"tag":"proxy","protocol":"vless"}],"routing":{"rules":[]}}`
+		out, rep := mustBuild(t, baseInput(profile.Profile{Config: parseObj(t, []byte(cfg)), RoutingSource: src}))
+		m := decode(t, out)
+		if _, ok := m["metrics"]; ok {
+			t.Fatalf("source %q: metrics kept: %s", src.Kind, out)
+		}
+		if marshalAny(t, m["api"]) != marshalAny(t, decode(t, mustMarshal(t, apiSection()))) {
+			t.Fatalf("source %q: api = %v", src.Kind, m["api"])
+		}
+		n := 0
+		for _, w := range rep.Warnings {
+			if strings.Contains(w, "metrics") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("source %q: warnings = %v", src.Kind, rep.Warnings)
+		}
+	}
+	// No metrics section: no warning.
+	cfg := `{"outbounds":[{"tag":"proxy","protocol":"vless"}],"routing":{"rules":[]}}`
+	if _, rep := mustBuild(t, baseInput(profile.Profile{Config: parseObj(t, []byte(cfg))})); len(rep.Warnings) != 0 {
+		t.Fatalf("warnings = %v", rep.Warnings)
+	}
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := ojson.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
