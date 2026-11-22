@@ -22,6 +22,8 @@ import (
 // change shows up as one Removed plus one Added.
 type Diff struct {
 	Added, Removed, Changed []string
+	// Warnings are set by callers above Apply (subsvc): short codes, no secrets.
+	Warnings []string
 }
 
 // ErrNoProfiles: the fetch succeeded but yielded no usable profile.
