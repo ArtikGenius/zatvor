@@ -161,6 +161,7 @@ func (r *Runner) Start(ctx context.Context, cfg []byte, ready ReadyCheck) error 
 	if err != nil {
 		r.mu.Lock()
 		r.running = false
+		close(r.done) // release a concurrent Stop that already saw running
 		r.mu.Unlock()
 		return err
 	}

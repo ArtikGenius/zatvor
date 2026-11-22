@@ -282,3 +282,31 @@ func TestRingBufferCap(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestStartSpawnFailureReleasesStop(t *testing.T) {
+	r := New(filepath.Join(t.TempDir(), "no-such-xray"), t.TempDir(), RealClock{})
+	stopped := make(chan struct{})
+	quit := make(chan struct{})
+	go func() { // hammer Stop while Start fails
+		defer close(stopped)
+		for {
+			select {
+			case <-quit:
+				return
+			default:
+				_ = r.Stop(time.Second)
+			}
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		if err := r.Start(context.Background(), []byte("{}"), nil); err == nil {
+			t.Fatal("expected spawn error")
+		}
+	}
+	close(quit)
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent Stop blocked forever after spawn failure")
+	}
+}
