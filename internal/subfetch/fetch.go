@@ -5,6 +5,7 @@ package subfetch
 import (
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -17,12 +18,15 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/ArtikGenius/zatvor/internal/hwid"
 	"github.com/ArtikGenius/zatvor/internal/subbody"
 	"github.com/ArtikGenius/zatvor/internal/subhdr"
 )
 
 // maxBody caps both the wire and the decompressed body.
 const maxBody = 16 << 20
+
+const maxRedirects = 5
 
 // Dialer opens a connection; nil in Request means a direct connection.
 type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -62,6 +66,7 @@ type Result struct {
 // identical ones.
 type Fetcher struct {
 	timeout time.Duration
+	tlsCfg  *tls.Config // tests only
 	group   singleflight.Group
 }
 
@@ -144,6 +149,7 @@ func (f *Fetcher) do(ctx context.Context, req Request, host string) (*raw, error
 
 	tr := &http.Transport{
 		Proxy:               nil, // never pick up system proxy settings
+		TLSClientConfig:     f.tlsCfg,
 		TLSHandshakeTimeout: f.timeout,
 		DisableKeepAlives:   true,
 	}
@@ -155,10 +161,19 @@ func (f *Fetcher) do(ctx context.Context, req Request, host string) (*raw, error
 	defer tr.CloseIdleConnections()
 	client := &http.Client{
 		Transport: tr,
-		// Never send the UA or HWID headers to a different host.
 		CheckRedirect: func(next *http.Request, via []*http.Request) error {
-			if next.URL.Host != via[0].URL.Host || len(via) >= 5 {
-				return http.ErrUseLastResponse
+			if len(via) > maxRedirects {
+				return fmt.Errorf("more than %d redirects from %s", maxRedirects, host)
+			}
+			prev := via[len(via)-1]
+			if prev.URL.Scheme == "https" && next.URL.Scheme != "https" {
+				return fmt.Errorf("redirect from %s to %s downgrades https to http", prev.URL.Host, next.URL.Host)
+			}
+			// HWID identifies the device to the subscription host only.
+			if hwid.NormalizeHost(next.URL.Host) != hwid.NormalizeHost(via[0].URL.Host) {
+				for k := range req.HWID {
+					next.Header.Del(k)
+				}
 			}
 			return nil
 		},

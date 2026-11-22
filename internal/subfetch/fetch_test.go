@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
 )
 
 const linkBody = "vless://00000000-0000-4000-8000-000000000000@example.com:443?security=tls#n1\n"
@@ -182,17 +182,91 @@ func TestNoSecretInError(t *testing.T) {
 	}
 }
 
-func TestCrossHostRedirectNotFollowed(t *testing.T) {
-	var other atomic.Int32
-	o := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { other.Add(1) }))
-	defer o.Close()
+func hwidHeader() http.Header {
+	h := http.Header{}
+	h.Set("x-hwid", "abc")
+	h.Set("x-device-os", "Windows")
+	return h
+}
+
+func TestRedirectSameHostKeepsHWID(t *testing.T) {
+	var got http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, strings.Replace(o.URL, "127.0.0.1", "localhost", 1), http.StatusFound)
+		if r.URL.Path == "/a" {
+			http.Redirect(w, r, "/b", http.StatusFound)
+			return
+		}
+		got = r.Header.Clone()
+		_, _ = w.Write([]byte(linkBody))
 	}))
 	defer srv.Close()
-	res, err := New(2*time.Second).Fetch(context.Background(), Request{URL: srv.URL, UA: "ua"})
-	if err != nil || res.Problem != HTTPStatus || other.Load() != 0 {
-		t.Fatalf("err=%v problem=%v other=%d", err, res.Problem, other.Load())
+	res, err := New(5*time.Second).Fetch(context.Background(), Request{URL: srv.URL + "/a", UA: "ua", HWID: hwidHeader()})
+	if err != nil || res.Problem != None || got.Get("X-Hwid") != "abc" || got.Get("X-Device-Os") != "Windows" {
+		t.Fatalf("err=%v problem=%v hdr=%v", err, res.Problem, got)
+	}
+}
+
+func TestRedirectCrossHostDropsHWID(t *testing.T) {
+	var got http.Header
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = w.Write([]byte(linkBody))
+	}))
+	defer cdn.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, strings.Replace(cdn.URL, "127.0.0.1", "localhost", 1), http.StatusFound)
+	}))
+	defer srv.Close()
+	res, err := New(5*time.Second).Fetch(context.Background(), Request{URL: srv.URL, UA: "ua", HWID: hwidHeader()})
+	if err != nil || res.Problem != None {
+		t.Fatalf("err=%v problem=%v", err, res.Problem)
+	}
+	if got.Get("User-Agent") != "ua" || got.Get("Accept-Encoding") != "gzip" {
+		t.Fatalf("UA/AE lost: %v", got)
+	}
+	if got.Get("X-Hwid") != "" || got.Get("X-Device-Os") != "" {
+		t.Fatalf("HWID leaked cross-host: %v", got)
+	}
+}
+
+func TestRedirectDowngradeRefused(t *testing.T) {
+	var plain atomic.Int32
+	p := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { plain.Add(1) }))
+	defer p.Close()
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, p.URL+"/SECRETTOKEN", http.StatusFound)
+	}))
+	defer tlsSrv.Close()
+	f := New(5 * time.Second)
+	f.tlsCfg = tlsSrv.Client().Transport.(*http.Transport).TLSClientConfig
+	res, err := f.Fetch(context.Background(), Request{URL: tlsSrv.URL + "/SECRETTOKEN", UA: "ua", HWID: hwidHeader()})
+	if err == nil || res.Problem != Network || plain.Load() != 0 {
+		t.Fatalf("err=%v problem=%v plain=%d", err, res.Problem, plain.Load())
+	}
+	if strings.Contains(err.Error(), "SECRETTOKEN") {
+		t.Fatalf("secret in error: %v", err)
+	}
+}
+
+func TestRedirectLimit(t *testing.T) {
+	hops := func(n int) (Result, error) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var i int
+			_, _ = fmt.Sscanf(r.URL.Path, "/%d", &i)
+			if i < n {
+				http.Redirect(w, r, fmt.Sprintf("/%d", i+1), http.StatusFound)
+				return
+			}
+			_, _ = w.Write([]byte(linkBody))
+		}))
+		defer srv.Close()
+		return New(5*time.Second).Fetch(context.Background(), Request{URL: srv.URL + "/0", UA: "ua"})
+	}
+	if res, err := hops(5); err != nil || res.Problem != None {
+		t.Fatalf("5 hops: %v %v", err, res.Problem)
+	}
+	if res, err := hops(6); err == nil || res.Problem != Network {
+		t.Fatalf("6 hops: %v %v", err, res.Problem)
 	}
 }
 
@@ -208,4 +282,3 @@ func TestUAHelpers(t *testing.T) {
 		t.Fatal("HappUA")
 	}
 }
-
