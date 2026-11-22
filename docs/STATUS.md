@@ -1,6 +1,6 @@
 # Status
 
-Stage 1b (zatvord on Windows) is complete as of 2026-11-22 on branch `stage-1b`, pending the 1b final fix wave and the merge to main. Next: stage 1c (UI and delivery). Stage 1a is complete and merged. Stage 0c is complete, pending the macOS UI check.
+Stage 1b (zatvord on Windows) is complete as of 2026-11-22 on branch `stage-1b`, including the 1b final fix wave, pending the merge to main. Next: stage 1c (UI and delivery). Stage 1a is complete and merged. Stage 0c is complete, pending the macOS UI check.
 Plan of 1b: [docs/superpowers/plans/2026-11-22-stage-1b-zatvord-windows.md](superpowers/plans/2026-11-22-stage-1b-zatvord-windows.md).
 What to check: [docs/checklists/stage-1b.md](checklists/stage-1b.md) (nothing to run by hand).
 Plan of 1a: [docs/superpowers/plans/2026-11-22-stage-1a-core-engine.md](superpowers/plans/2026-11-22-stage-1a-core-engine.md).
@@ -42,22 +42,24 @@ Known CI incident: the `secrets` CI job failed from 1f7ccd3 until eec06c6. The p
 ## Known limitations in 1b
 
 - Without autostart, a killed process tree or a power loss leaves the system proxy on a dead port until the next launch (spec §8). Revisit with autostart in 1c.
-- A dev-tools toggle while connected applies at the next connect.
+- With dev tools on and the daemon not connected, Claude Code and VS Code have no network: their JSON keys name the dev-tools port statically (fail-closed). Shells and the wrappers read the state file and go direct (fail-open). The 1c UI must show this next to the toggle ([ADR 0013](decisions/0013-devtool-routing-targets.md)).
 - Xray and the bundled geo files are expected next to the executable (`XrayPath`, `BundledGeo`). This matters for the installer layout in 1c.
 - Diagnostics do not redact standalone secrets shorter than 6 bytes, such as a very short Reality shortId shown alone (R52).
 - The local API has no `GET /v1/settings` yet (1c).
 - The `Local\` single-instance mutex is per session: RDP plus a console session can run two daemons.
 - Safe and live modes keep separate stores and journals (R43, R16): switching modes shows a different, empty subscription list.
 
-## Scheduled for the 1b final fix wave
+## Done in the 1b final fix wave
 
-Items 1 and 3 are fixed before the PR merges; item 2 is already fixed:
+From the final whole-branch review (rulings R56, R57). Report: `.superpowers/sdd/2026-11-22-stage-1b-zatvord-windows/final-wave-report.md`.
 
-1. `subsvc`: a failed `Start` refresh blocks scheduled updates for a full interval (seed the backoff instead). Scheduled for the 1b final fix wave.
-2. `xrayrun` latency flake: fixed (R47, 078e94d).
-3. `engine` ready checks (`engine.go:136`) use a plain `DialReady` on bind-then-close ports; use the protocol-aware check (mixed = SOCKS/HTTP, probe = SOCKS). Scheduled for the 1b final fix wave.
-
-The final reviewer also checks that `profileGeo` source selection in `engine` agrees with the `gen` routing source.
+- `subsvc`: a failed start-up refresh enters the 1, 2, 4, 8... minute backoff (tunnel only) instead of blocking scheduled updates for a full interval; a canceled update returns `canceled` and grows no backoff.
+- `engine`, `xrayrun`: ready checks speak each inbound's protocol (`xrayrun.SOCKSReady`: no-auth SOCKS5 on the mixed inbound, password SOCKS5 with the probe credentials on the probe inbound), so a foreign listener never yields Connected. The re-check after a failed recovery backs off 10 s, 20 s, 40 s... up to 5 minutes.
+- `daemon`: the dev-tools inbound is always built (R56), so the toggle applies at once; vanished discovery files are rewritten without restarting the API, so operations in flight survive (R57); the supervisor's revert also empties `Run/devtools.proxy`.
+- `sysapi`, `rotlog`: `safe-mode.jsonl` records writes only and rotates at 5 MiB like `zatvord.log`.
+- `api`: `shutting_down` is HTTP 503.
+- `diag`: the query of a foreign PAC URL is masked.
+- `sysproxy`: the FLAGS_UI fallback runs only on `ERROR_INVALID_PARAMETER`.
 
 ## Done in 0c
 
@@ -131,15 +133,16 @@ Deferred minor review findings from 1b:
 - appdir, settings: `Resolve` tightens permissions on any `--data-dir` (daemon validates it); the every-field guard skips struct subfields; a dir fsync error is ignored on Windows.
 - ports: `TestExhausted` should assert calls > 0; `TestLoopbackProber` should hold a real listener (TCP-only and UDP-only cases) and not skip on error; nil `rnd` doc note.
 - journal: `done()` re-reads the whole file (O(n^2)); no test for `RevertAll` when `pending()` fails; the Reverter doc should say Current must encode like Applied (literal compare with UseNumber); `pending()` skips unparsable mid-file lines silently.
-- sysproxy: the named RAS connection path is never exercised on the runner; a possible auto-detect flake in the foreign-PAC systemtest; `setConn` retry discards the first error and can leave a half state on double failure; `getConn` falls back to FLAGS on any error.
+- sysproxy: the named RAS connection path is never exercised on the runner; a possible auto-detect flake in the foreign-PAC systemtest; the `setConn` FLAGS retry can leave a half state on double failure.
 - store keys: in-process CredMan first-write race (needs a mutex); the `CredRead` blob is not zeroed before `CredFree`; the `CredFree` result is discarded; the DACL test should assert the mask.
 - geo/assets: mutex held across a download; `url+".sha256"` is wrong for URLs with query strings; `Prepare` re-hashes inputs on reuse; a cached profile file replaces the bundled roscomvpn one (a tag only in the bundle then goes missing); the `Fetch` swap loop is non-transactional across the two files (safe through `cachedPath`); no test for "already cached, `NeedsBootstrap` false".
 - engine: a geo switch cannot be interrupted after the old runner stopped (latency only).
-- subsvc: `Start` joining a User flight does not record the attempt; a `Run` cancel mid-flight logs a false failure and a detached flight may save during shutdown; `TestButtonNeverJoinsScheduledFlight` needs a deadline; the per-user settings snapshot of a profile could be lost by future direct store edits.
+- subsvc: `Start` joining a User flight does not record the attempt; a detached flight may save during shutdown; `TestButtonNeverJoinsScheduledFlight` needs a deadline; the per-user settings snapshot of a profile could be lost by future direct store edits.
 - devtools: an empty object with a comment is cosmetic; a new-file create could use a no-replace rename; the `.ps1` wrapper does not run under a Restricted policy (UI note in 1c).
 - api: test globals are restored before `srv.Stop` (narrow race window); the local API has no `GET /v1/settings` (1c); the `Local\` mutex is per session.
 - xrayrun: the `TestSocksReady` late-listener subtest rebinds a freed port.
 - daemon, e2e: `saveRunner` and the gate are duplicated across the live-test packages.
+- Refactor planned for 1c: the atomic temp-file, fsync and rename write is copied in `daemon`, `api`, `settings`, `store` and `devtools` (and similar code lives in `journal` and `geo/assets`); move it to one shared helper.
 
 ## Next: stage 1c
 

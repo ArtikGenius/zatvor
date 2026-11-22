@@ -23,8 +23,16 @@ overwrite the user's own edits.
   created).
 - **State file (R23).** Shell blocks and wrappers read a state file (`Run\devtools.proxy`) at every prompt or
   start. The daemon writes it from engine events: `http://127.0.0.1:<port>` while connected, empty
-  otherwise. Anything that is not exactly that URL counts as empty and is never run as code. So the files
-  we edited stay valid when the tunnel is down. The daemon empties it at start and at exit.
+  otherwise. Anything that is not exactly that URL counts as empty and is never run as code. So the shell
+  blocks and wrappers stay valid when the tunnel is down. The daemon empties it at start and at exit, and
+  the supervisor empties it after its own revert.
+- **Tunnel down, per target.** While dev tools are on and the daemon is not connected (disconnected,
+  degraded, failed):
+  - `pwsh5`, `pwsh7`, `bash` and the `codex` and `gemini` wrappers read the state file, find it empty and
+    set no proxy: the tool goes direct (fail-open).
+  - `claude` and `vscode` hold static JSON keys that name `http://127.0.0.1:<dev-tools port>`. Nothing
+    serves that port while Xray is down, so Claude Code and VS Code have no network until the daemon is
+    connected again or dev tools are turned off (fail-closed).
 - **Projection (R28).** One journal entry per file. `Prev` and `Applied` hold only our part of the file: the
   marked block for a shell profile, our two keys for a JSON file (plus an `exists` flag, R30). The user's
   other edits never look foreign, and a revert removes only our part. Files are edited through symlinks with
@@ -41,10 +49,15 @@ overwrite the user's own edits.
   execution policy (group policy, then CurrentUser, then LocalMachine, read-only from the registry; the
   default on client Windows is Restricted) lets profiles run. Otherwise the target is `Missing` with a note.
   An existing profile is edited regardless.
-- **Toggle.** The setting is saved in `settings`. A change while connected applies at the next connect.
-  When the connect re-picks the dev-tool port, the daemon enables the targets again with the new port.
+- **Toggle.** The setting is saved in `settings`. Every connect builds the dev-tools inbound, loopback only,
+  whether dev tools are on or not (R56), so a change while connected applies at once: the targets name a
+  port Xray already serves. When a connect re-picks the dev-tool port, the daemon enables the targets again
+  with the new port.
 
 ## Consequences
 
 - The `.ps1` wrapper does not run under a Restricted policy (UI note in 1c).
+- While connected, Xray listens on one more loopback port (the dev-tools inbound) even with dev tools off.
+- With dev tools on and the daemon not connected, Claude Code and VS Code have no network (fail-closed,
+  above). The 1c UI must say so next to the toggle.
 - Diagnostics redact URL user info and dev-tool values from the journal (R50).

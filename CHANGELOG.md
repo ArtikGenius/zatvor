@@ -24,6 +24,7 @@ All notable changes to Zatvor are recorded here.
 - `diag`, `validate`: redacted diagnostics bundle (stored secrets, URL user info, dev-tool values and exit addresses replaced); `validate` gains secret-variant helpers for it.
 - Live Windows acceptance on `windows-latest` (`systemtest`): connect, crash revert and dev tools; runs 45048050788 and 45049736536.
 - ADRs 0012 and 0013; README "What Zatvor sends" updated; stage 1b checklist.
+- Final fix wave: a failed start-up refresh backs off from 1 minute; protocol-aware Xray ready checks; the recovery re-check backs off up to 5 minutes; the dev-tools toggle applies at once (the dev-tools inbound is always built); discovery files are rewritten without an API restart; the supervisor's revert empties the dev-tool state file; `safe-mode.jsonl` records writes only and rotates at 5 MiB; `shutting_down` is HTTP 503; foreign PAC URL queries masked in diagnostics; the Windows FLAGS_UI fallback narrowed to `ERROR_INVALID_PARAMETER`.
 
 ### Stage 1a (core engine)
 
