@@ -5,7 +5,11 @@
 //
 // Tray icon (small iris); left click toggles a 360x560 frameless popup that is
 // created hidden at start and attached to the tray icon (Wails positions it);
-// the popup hides on focus loss. --self-test measures the budgets from spec §12
+// the popup hides on focus loss. On a normal start the popup also opens once by
+// itself, so the app is visibly running even when the menu bar hides the icon
+// (notch). Every step is logged to a file (see logPath). --ui-check (CI) opens
+// the popup, clicks every control from the page and writes ui-check.json next
+// to the executable. --self-test measures the budgets from spec §12
 // without a tray click and writes metrics.json next to the executable.
 package main
 
@@ -22,6 +26,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -45,7 +50,9 @@ type paintReport struct {
 
 func main() {
 	selfTest := slices.Contains(os.Args[1:], "--self-test")
+	uiCheck := slices.Contains(os.Args[1:], "--ui-check")
 	painted := make(chan paintReport, 64)
+	logf("start %s self_test=%v ui_check=%v", wailsVersion(), selfTest, uiCheck)
 
 	app := application.New(application.Options{
 		Name:        "ZatvorProtoWails",
@@ -67,7 +74,7 @@ func main() {
 		Hidden:          true,
 		DisableResize:   true,
 		HideOnEscape:    true,
-		HideOnFocusLost: !selfTest, // a runner may not give us focus
+		HideOnFocusLost: !selfTest && !uiCheck, // a runner may not give us focus
 		URL:             "/",
 		Windows:         application.WindowsWindow{HiddenOnTaskbar: true},
 	})
@@ -84,6 +91,27 @@ func main() {
 	tray.SetMenu(menu)
 	tray.AttachWindow(popup).WindowOffset(gap)
 
+	switch {
+	case uiCheck:
+		go func() {
+			runUICheck(tray, popup)
+			app.Quit()
+		}()
+	case !selfTest:
+		go func() {
+			// Open once at start, so the app is visibly running.
+			time.Sleep(1500 * time.Millisecond)
+			if err := tray.PositionWindow(popup, gap); err != nil {
+				logf("start: PositionWindow: %v", err)
+			}
+			popup.Show()
+			popup.Focus()
+			logf("start: popup shown, bounds %+v", popup.Bounds())
+			for _, sc := range application.Get().Screen.GetAll() {
+				logf("screen %s bounds %+v work %+v scale %v", sc.Name, sc.Bounds, sc.WorkArea, sc.ScaleFactor)
+			}
+		}()
+	}
 	if selfTest {
 		go func() {
 			runSelfTest(tray, popup, painted)
@@ -114,6 +142,14 @@ func assets(painted chan<- paintReport) http.Handler {
 		case "/", "/index.html", "/popup.html":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write([]byte(page))
+		case "/__log":
+			m := r.URL.Query().Get("m")
+			logf("page: %s", m)
+			select {
+			case uiEvents <- m:
+			default:
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case "/__painted":
 			now := time.Now()
 			q := r.URL.Query()
@@ -127,6 +163,105 @@ func assets(painted chan<- paintReport) http.Handler {
 			files.ServeHTTP(w, r)
 		}
 	})
+}
+
+var uiEvents = make(chan string, 64)
+
+// logPath is ~/Library/Logs/ZatvorProto/wails.log (macOS) or
+// %LOCALAPPDATA%\ZatvorProto\wails.log (Windows).
+func logPath() string {
+	if runtime.GOOS == "darwin" {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, "Library", "Logs", "ZatvorProto", "wails.log")
+	}
+	dir := os.Getenv("LOCALAPPDATA")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "ZatvorProto", "wails.log")
+}
+
+var (
+	logMu   sync.Mutex
+	logFile *os.File
+)
+
+func logf(format string, args ...any) {
+	logMu.Lock()
+	defer logMu.Unlock()
+	if logFile == nil {
+		p := logPath()
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		logFile = f
+	}
+	fmt.Fprintf(logFile, "%d %s\n", time.Now().UnixMilli(), fmt.Sprintf(format, args...))
+}
+
+// runUICheck opens the popup the way the tray click does (position next to the
+// icon, show, focus), checks it lies on a screen, clicks every control from the
+// page and waits for the page's reports, then writes ui-check.json.
+func runUICheck(tray *application.SystemTray, popup *application.WebviewWindow) {
+	res := map[string]any{"framework": "wails", "os": runtime.GOOS}
+	wait := func(prefix string, d time.Duration) bool {
+		deadline := time.After(d)
+		for {
+			select {
+			case m := <-uiEvents:
+				if strings.HasPrefix(m, prefix) {
+					return true
+				}
+			case <-deadline:
+				return false
+			}
+		}
+	}
+	// The page loads on the first Show (the window starts hidden).
+	if err := tray.PositionWindow(popup, gap); err != nil {
+		res["positionError"] = err.Error()
+	}
+	popup.Show()
+	popup.Focus()
+	res["pageLoaded"] = wait("page loaded", 20*time.Second)
+	time.Sleep(time.Second)
+	res["visible"] = popup.IsVisible()
+	pb := popup.Bounds() // DIP, like Screen.Bounds
+	res["popupBounds"] = pb
+	onScreen := false
+	for _, s := range application.Get().Screen.GetAll() {
+		b := s.Bounds
+		if pb.X >= b.X && pb.Y >= b.Y && pb.X+pb.Width <= b.X+b.Width && pb.Y+pb.Height <= b.Y+b.Height {
+			onScreen = true
+		}
+	}
+	res["onScreen"] = onScreen
+	clicks := map[string]bool{}
+	for _, c := range [][2]string{
+		{"[data-action=power]", "click power"},
+		{"[data-action=pause]", "click pause"},
+		{"[data-action=check]", "click check"},
+		{"[data-action=panel]", "click panel"},
+		{"[data-action=menu]", "click menu"},
+		{"[data-theme-set=light]", "click theme=light"},
+		{"[data-theme-set=dark]", "click theme=dark"},
+		{"[data-theme-set=system]", "click theme=system"},
+	} {
+		popup.ExecJS("document.querySelector('" + c[0] + "').click()")
+		clicks[c[0]] = wait(c[1], 5*time.Second)
+		time.Sleep(400 * time.Millisecond)
+	}
+	res["clicks"] = clicks
+	if os.Getenv("ZATVOR_UI_CHECK_HOLD") != "" {
+		time.Sleep(8 * time.Second) // the workflow takes a screenshot meanwhile
+	}
+	res["log"] = logPath()
+	exe, _ := os.Executable()
+	out, _ := json.MarshalIndent(res, "", "  ")
+	_ = os.WriteFile(filepath.Join(filepath.Dir(exe), "ui-check.json"), out, 0o644)
+	logf("ui-check done: %s", out)
 }
 
 func probeJS(id int) string {

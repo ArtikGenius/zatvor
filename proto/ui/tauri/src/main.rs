@@ -2,7 +2,12 @@
 //
 // Tray icon (small iris); left click toggles a 360x560 borderless popup that is
 // created hidden at start and placed next to the tray icon; the popup hides on
-// focus loss. `--self-test` measures the budgets from spec §12 without a tray
+// focus loss. On a normal start the popup also opens once by itself, so the
+// app is visibly running even when the menu bar hides the icon (notch).
+// Every step is logged to a file (see log_path) for a manual check.
+// `--ui-check` (CI) opens the popup through the click path, clicks every
+// control from the page and writes ui-check.json next to the exe.
+// `--self-test` measures the budgets from spec §12 without a tray
 // click (runners cannot click the tray) and writes metrics.json next to the exe.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -35,6 +40,40 @@ struct State {
 }
 
 #[tauri::command]
+fn ui_log(msg: String) {
+    log(&format!("page: {msg}"));
+    if let Some(tx) = UI_TX.get() {
+        let _ = tx.lock().unwrap().send(msg);
+    }
+}
+
+static UI_TX: std::sync::OnceLock<Mutex<Sender<String>>> = std::sync::OnceLock::new();
+static LOG: std::sync::OnceLock<Mutex<Option<std::fs::File>>> = std::sync::OnceLock::new();
+
+/// ~/Library/Logs/ZatvorProto/tauri.log (macOS), %LOCALAPPDATA%\ZatvorProto\tauri.log (Windows).
+fn log_path() -> PathBuf {
+    let base = if cfg!(target_os = "macos") {
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Logs")
+    } else {
+        PathBuf::from(std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("TEMP")).unwrap_or_default())
+    };
+    base.join("ZatvorProto").join("tauri.log")
+}
+
+fn log(msg: &str) {
+    use std::io::Write;
+    let f = LOG.get_or_init(|| {
+        let p = log_path();
+        let _ = std::fs::create_dir_all(p.parent().unwrap_or(Path::new(".")));
+        Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(p).ok())
+    });
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    if let Some(f) = f.lock().unwrap().as_mut() {
+        let _ = writeln!(f, "{t} {msg}");
+    }
+}
+
+#[tauri::command]
 fn painted(state: tauri::State<'_, State>, id: u32, vis_eval: String, vis_raf: String) {
     let now = Instant::now();
     let _ = state.painted_tx.lock().unwrap().send((id, vis_eval, vis_raf, now));
@@ -42,6 +81,10 @@ fn painted(state: tauri::State<'_, State>, id: u32, vis_eval: String, vis_raf: S
 
 fn main() {
     let self_test = std::env::args().any(|a| a == "--self-test");
+    let ui_check = std::env::args().any(|a| a == "--ui-check");
+    let (ui_tx, ui_rx) = channel::<String>();
+    let _ = UI_TX.set(Mutex::new(ui_tx));
+    log(&format!("start {} self_test={self_test} ui_check={ui_check}", tauri::VERSION));
     let (tx, rx) = channel();
 
     tauri::Builder::default()
@@ -50,7 +93,7 @@ fn main() {
             last_blur_hide: Mutex::new(None),
             self_test,
         })
-        .invoke_handler(tauri::generate_handler![painted])
+        .invoke_handler(tauri::generate_handler![painted, ui_log])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -70,10 +113,11 @@ fn main() {
             popup.on_window_event(move |ev| {
                 if let WindowEvent::Focused(false) = ev {
                     let st = handle.state::<State>();
-                    if st.self_test {
+                    if st.self_test || ui_check {
                         return; // a runner may not give us focus; keep the popup up
                     }
                     if let Some(w) = handle.get_webview_window("popup") {
+                        log("popup lost focus: hide");
                         let _ = w.hide();
                         *st.last_blur_hide.lock().unwrap() = Some(Instant::now());
                     }
@@ -109,7 +153,24 @@ fn main() {
                     }
                 })
                 .build(app)?;
+            let tray_rect = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten());
+            log(&format!("tray created, rect {tray_rect:?}"));
+            for m in app.available_monitors().unwrap_or_default() {
+                log(&format!("monitor {:?} pos {:?} size {:?} work {:?} scale {}", m.name(), m.position(), m.size(), m.work_area(), m.scale_factor()));
+            }
 
+            if ui_check {
+                let h = app.handle().clone();
+                std::thread::spawn(move || ui_check_run(h, ui_rx));
+            } else if !self_test {
+                // Open once at start, so the app is visibly running.
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(800));
+                    let h2 = h.clone();
+                    let _ = h.run_on_main_thread(move || toggle(&h2, None));
+                });
+            }
             if self_test {
                 let h = app.handle().clone();
                 std::thread::spawn(move || self_test_run(h, rx));
@@ -121,8 +182,10 @@ fn main() {
 }
 
 fn toggle(app: &AppHandle, rect: Option<Rect>) {
+    log(&format!("toggle, click rect {rect:?}"));
     let Some(w) = app.get_webview_window("popup") else { return };
     if w.is_visible().unwrap_or(false) {
+        log("popup visible: hide");
         let _ = w.hide();
         return;
     }
@@ -130,40 +193,95 @@ fn toggle(app: &AppHandle, rect: Option<Rect>) {
     // the popup (which hides it); do not reopen it in the same gesture.
     if let Some(t) = *app.state::<State>().last_blur_hide.lock().unwrap() {
         if t.elapsed() < Duration::from_millis(250) {
+            log("click right after a focus-loss hide: stay hidden");
             return;
         }
     }
     place(&w, rect);
     let _ = w.show();
     let _ = w.set_focus();
+    log(&format!("popup shown at {:?} size {:?}", w.outer_position(), w.outer_size()));
 }
 
-/// Put the popup next to the tray icon: above it for a bottom taskbar, below it
-/// for a top bar (macOS menu bar), beside it for a left/right taskbar; clamp to
-/// the monitor's work area.
+/// Put the popup next to the tray icon (see popup_position); without a tray
+/// rect, centre it at the top of the primary monitor.
 fn place(w: &WebviewWindow, rect: Option<Rect>) {
     let tray = rect.or_else(|| {
         w.app_handle()
             .tray_by_id("main")
             .and_then(|t| t.rect().ok().flatten())
     });
-    let Some(tray) = tray else { return };
     let scale = w.scale_factor().unwrap_or(1.0);
-    let tp: PhysicalPosition<f64> = tray.position.to_physical(scale);
-    let ts: tauri::PhysicalSize<f64> = tray.size.to_physical(scale);
-    let (cx, cy) = (tp.x + ts.width / 2.0, tp.y + ts.height / 2.0);
-    let Ok(Some(mon)) = w.monitor_from_point(cx, cy) else { return };
-    let scale = mon.scale_factor();
-    let (pw, ph, gap) = (W * scale, H * scale, GAP * scale);
-    let wa = mon.work_area();
-    let (ax, ay) = (wa.position.x as f64, wa.position.y as f64);
-    let (aw, ah) = (wa.size.width as f64, wa.size.height as f64);
+    let tray = tray.map(|t| {
+        let p: PhysicalPosition<f64> = t.position.to_physical(scale);
+        let s: tauri::PhysicalSize<f64> = t.size.to_physical(scale);
+        (p.x, p.y, s.width, s.height)
+    });
+    let mons: Vec<Mon> = w
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| Mon {
+            x: m.position().x as f64,
+            y: m.position().y as f64,
+            w: m.size().width as f64,
+            h: m.size().height as f64,
+            wx: m.work_area().position.x as f64,
+            wy: m.work_area().position.y as f64,
+            ww: m.work_area().size.width as f64,
+            wh: m.work_area().size.height as f64,
+            scale: m.scale_factor(),
+        })
+        .collect();
+    let primary = w.primary_monitor().ok().flatten().and_then(|p| {
+        mons.iter().position(|m| m.x == p.position().x as f64 && m.y == p.position().y as f64)
+    });
+    match popup_position(tray, &mons, primary.unwrap_or(0)) {
+        Some((x, y)) => {
+            log(&format!("place: tray {tray:?} -> ({x}, {y})"));
+            let _ = w.set_position(PhysicalPosition::new(x, y));
+        }
+        None => log(&format!("place: no monitor for tray {tray:?}; monitors {mons:?}")),
+    }
+}
+
+/// A monitor in physical pixels: full bounds, work area, scale factor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Mon {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    wx: f64,
+    wy: f64,
+    ww: f64,
+    wh: f64,
+    scale: f64,
+}
+
+/// Top-left corner (physical pixels) for the popup next to a tray icon given
+/// as (x, y, width, height) in physical pixels: above it for a bottom taskbar,
+/// below it for a top bar (macOS menu bar), beside it for a left/right
+/// taskbar; clamped to the work area. The monitor is the one whose physical
+/// bounds hold the icon's centre (all values in one coordinate space, so a
+/// Retina screen works: Tauri's monitor_from_point expects points on macOS).
+fn popup_position(tray: Option<(f64, f64, f64, f64)>, mons: &[Mon], primary: usize) -> Option<(i32, i32)> {
+    let inside = |m: &Mon, x: f64, y: f64| x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h;
+    let Some((tx, ty, tw, th)) = tray else {
+        let m = mons.get(primary).or(mons.first())?;
+        let (pw, gap) = (W * m.scale, GAP * m.scale);
+        return Some(((m.wx + m.ww - pw - gap).round() as i32, (m.wy + gap).round() as i32));
+    };
+    let (cx, cy) = (tx + tw / 2.0, ty + th / 2.0);
+    let m = mons.iter().find(|m| inside(m, cx, cy))?;
+    let (pw, ph, gap) = (W * m.scale, H * m.scale, GAP * m.scale);
+    let (ax, ay, aw, ah) = (m.wx, m.wy, m.ww, m.wh);
     let (mut x, mut y);
     if cy >= ay + ah {
         // bottom taskbar
         x = cx - pw / 2.0;
         y = ay + ah - ph - gap;
-    } else if tp.y + ts.height <= ay {
+    } else if ty + th <= ay {
         // top bar
         x = cx - pw / 2.0;
         y = ay + gap;
@@ -176,11 +294,124 @@ fn place(w: &WebviewWindow, rect: Option<Rect>) {
     } else {
         // tray inside the work area (auto-hide taskbar): above or below it
         x = cx - pw / 2.0;
-        y = if cy > ay + ah / 2.0 { tp.y - ph - gap } else { tp.y + ts.height + gap };
+        y = if cy > ay + ah / 2.0 { ty - ph - gap } else { ty + th + gap };
     }
-    x = x.clamp(ax + gap, ax + aw - pw - gap);
-    y = y.clamp(ay, ay + ah - ph);
-    let _ = w.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    // max/min instead of clamp: clamp panics when the area is smaller than the popup
+    x = x.min(ax + aw - pw - gap).max(ax + gap);
+    y = y.min(ay + ah - ph).max(ay);
+    Some((x.round() as i32, y.round() as i32))
+}
+
+/// CI check of the interactive path: open the popup through toggle() (what a
+/// tray click calls), check it lies on a monitor, click every control from the
+/// page and wait for the page's reports, then write ui-check.json.
+fn ui_check_run(app: AppHandle, rx: Receiver<String>) {
+    let mut result = json!({"framework": "tauri", "os": std::env::consts::OS});
+    let wait = |want: &str, secs: u64| -> bool {
+        let end = Instant::now() + Duration::from_secs(secs);
+        while let Some(left) = end.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(m) if m.starts_with(want) => return true,
+                Ok(_) => continue,
+                Err(_) => return false,
+            }
+        }
+        false
+    };
+    result["pageLoaded"] = json!(wait("page loaded", 20));
+    std::thread::sleep(Duration::from_secs(2));
+    let tray_rect = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten());
+    result["trayRect"] = json!(format!("{tray_rect:?}"));
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || toggle(&h, None));
+    std::thread::sleep(Duration::from_secs(1));
+    let w = app.get_webview_window("popup").expect("popup");
+    result["visible"] = json!(w.is_visible().unwrap_or(false));
+    let pos = w.outer_position().ok();
+    let size = w.outer_size().ok();
+    result["popupPos"] = json!(pos.map(|p| [p.x, p.y]));
+    result["popupSize"] = json!(size.map(|s| [s.width, s.height]));
+    let on_screen = match (pos, size) {
+        (Some(p), Some(s)) => app.available_monitors().unwrap_or_default().iter().any(|m| {
+            let (mx, my) = (m.position().x, m.position().y);
+            let (mw, mh) = (m.size().width as i32, m.size().height as i32);
+            p.x >= mx && p.y >= my && p.x + s.width as i32 <= mx + mw && p.y + s.height as i32 <= my + mh
+        }),
+        _ => false,
+    };
+    result["onScreen"] = json!(on_screen);
+    let mut clicks = serde_json::Map::new();
+    for (sel, want) in [
+        ("[data-action=power]", "click power"),
+        ("[data-action=pause]", "click pause"),
+        ("[data-action=check]", "click check"),
+        ("[data-action=panel]", "click panel"),
+        ("[data-action=menu]", "click menu"),
+        ("[data-theme-set=light]", "click theme=light"),
+        ("[data-theme-set=dark]", "click theme=dark"),
+        ("[data-theme-set=system]", "click theme=system"),
+    ] {
+        let _ = w.eval(format!("document.querySelector('{sel}').click()"));
+        clicks.insert(sel.to_string(), json!(wait(want, 5)));
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    result["clicks"] = Value::Object(clicks);
+    if std::env::var_os("ZATVOR_UI_CHECK_HOLD").is_some() {
+        // the workflow takes a screenshot meanwhile
+        std::thread::sleep(Duration::from_secs(8));
+    }
+    result["log"] = json!(log_path().display().to_string());
+    let exe = std::env::current_exe().unwrap_or_default();
+    let out = exe.parent().map(|d| d.join("ui-check.json")).unwrap_or_else(|| PathBuf::from("ui-check.json"));
+    let _ = std::fs::write(&out, serde_json::to_vec_pretty(&result).unwrap());
+    log(&format!("ui-check done: {result}"));
+    app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // MacBook Pro 14" Retina: 1512x982 points at scale 2, menu bar 37 points.
+    fn retina() -> Mon {
+        Mon { x: 0.0, y: 0.0, w: 3024.0, h: 1964.0, wx: 0.0, wy: 74.0, ww: 3024.0, wh: 1890.0, scale: 2.0 }
+    }
+
+    #[test]
+    fn retina_menu_bar_icon_right_half() {
+        // icon at x=1300 points: physical 2600, outside 1512 points (the old bug)
+        let p = popup_position(Some((2600.0, 0.0, 64.0, 74.0)), &[retina()], 0).unwrap();
+        assert_eq!(p, (2632 - 360, 74 + 16));
+    }
+
+    #[test]
+    fn retina_icon_near_right_edge_is_clamped() {
+        let p = popup_position(Some((2980.0, 0.0, 40.0, 74.0)), &[retina()], 0).unwrap();
+        assert_eq!(p.0, 3024 - 720 - 16);
+    }
+
+    #[test]
+    fn windows_bottom_taskbar() {
+        let m = Mon { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0, wx: 0.0, wy: 0.0, ww: 1920.0, wh: 1032.0, scale: 1.0 };
+        let p = popup_position(Some((1700.0, 1040.0, 24.0, 32.0)), &[m], 0).unwrap();
+        assert_eq!(p, (1712 - 180, 1032 - 560 - 8));
+    }
+
+    #[test]
+    fn no_tray_rect_uses_top_right_of_primary() {
+        assert_eq!(popup_position(None, &[retina()], 0), Some((3024 - 720 - 16, 74 + 16)));
+    }
+
+    #[test]
+    fn tiny_work_area_does_not_panic() {
+        let m = Mon { x: 0.0, y: 0.0, w: 300.0, h: 300.0, wx: 0.0, wy: 0.0, ww: 300.0, wh: 300.0, scale: 1.0 };
+        assert!(popup_position(Some((100.0, 290.0, 10.0, 10.0)), &[m], 0).is_some());
+    }
+
+    #[test]
+    fn icon_off_every_monitor() {
+        assert_eq!(popup_position(Some((9000.0, 0.0, 10.0, 10.0)), &[retina()], 0), None);
+    }
 }
 
 fn self_test_run(app: AppHandle, rx: Receiver<(u32, String, String, Instant)>) {

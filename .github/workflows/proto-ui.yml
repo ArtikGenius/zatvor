@@ -35,7 +35,7 @@ jobs:
       - run: test -z "$(gofmt -l wails shared)"
       - name: popup makes no network requests
         run: |
-          ! grep -nE 'https?://' shared/popup.html
+          ! grep -nE 'https?://' shared/popup.html shared/popup.js
 
   tauri:
     needs: check
@@ -98,6 +98,13 @@ jobs:
       - name: self-test
         working-directory: .
         run: ./proto/ui/selftest.sh tauri
+      - name: unit tests (popup placement)
+        if: runner.os == 'macOS'
+        run: cargo test --release
+      - name: ui check (clicks, start)
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: ./proto/ui/uicheck.sh tauri
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -159,6 +166,10 @@ jobs:
       - name: self-test
         working-directory: .
         run: ./proto/ui/selftest.sh wails
+      - name: ui check (clicks, start)
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: ./proto/ui/uicheck.sh wails
       - uses: actions/upload-artifact@v4
         if: always()
         with:

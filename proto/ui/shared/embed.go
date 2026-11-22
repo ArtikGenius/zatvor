@@ -4,5 +4,5 @@ package shared
 
 import "embed"
 
-//go:embed popup.html fonts icons/tray-32.png icons/tray-template-44.png
+//go:embed popup.html popup.js fonts icons/tray-32.png icons/tray-template-44.png
 var FS embed.FS
