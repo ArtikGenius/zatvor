@@ -29,7 +29,7 @@ See [docs/decisions/README.md](decisions/README.md).
 
 ## Open follow-ups
 
-Platform checks:
+Platform checks (stage 1 decision: automated Windows checks run on GitHub Actions Windows runners; hands-on checks run on Artur's Windows PC through a remote session when he is available, in safe mode except for the acceptance run he approves):
 - Mac tray check pending with Artur (`proto/ui/RESULTS.md`).
 - Windows Sandbox harness deferred (Artur cannot reboot now; CI Windows runners used instead).
 - Windows-taskbar tray placement check deferred to stage 1 (no Windows device connected).
