@@ -51,11 +51,11 @@ Known CI incident: the `secrets` CI job failed from 1f7ccd3 until eec06c6. The p
 
 ## Scheduled for the 1b final fix wave
 
-These three are fixed before the PR merges:
+Items 1 and 3 are fixed before the PR merges; item 2 is already fixed:
 
-- `subsvc`: a failed `Start` refresh blocks scheduled updates for a full interval (seed the backoff instead).
-- `xrayrun` latency test: robust against a parallel package grabbing the port (R47 fixed the runner; the test's own helper is the open part).
-- `engine` ready checks (`engine.go:136`) use a plain `DialReady` on bind-then-close ports; use the protocol-aware check (mixed = SOCKS/HTTP, probe = SOCKS).
+1. `subsvc`: a failed `Start` refresh blocks scheduled updates for a full interval (seed the backoff instead). Scheduled for the 1b final fix wave.
+2. `xrayrun` latency flake: fixed (R47, 078e94d).
+3. `engine` ready checks (`engine.go:136`) use a plain `DialReady` on bind-then-close ports; use the protocol-aware check (mixed = SOCKS/HTTP, probe = SOCKS). Scheduled for the 1b final fix wave.
 
 The final reviewer also checks that `profileGeo` source selection in `engine` agrees with the `gen` routing source.
 

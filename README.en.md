@@ -12,7 +12,7 @@ Licence: GPL-3.0, see [LICENSE](LICENSE). Third-party components: [NOTICE](NOTIC
 
 ## What Zatvor sends
 
-Zatvor contacts a subscription server when you add or refresh a subscription, once at daemon start, and on a schedule while the tunnel is up (see below). There is no telemetry.
+Zatvor contacts a subscription server when you add or refresh a subscription, at daemon start only if you turned on update-at-start (off by default), and on a schedule while the tunnel is up (see below). There is no telemetry.
 
 A request to a provider carries:
 
@@ -24,13 +24,13 @@ A request to a provider carries:
 
 New subscriptions are created with the device headers on (`SendDevice=true`, [ADR 0008](docs/decisions/0008-hwid-algorithm.md)); the switch to turn them off arrives with the panel in stage 1c.
 
-Not sent: user name, computer name, installed programs, cookies. The request ignores the OS proxy settings. Adding a subscription, pressing refresh and the refresh at daemon start go through the tunnel when it is up and directly otherwise. Scheduled updates (every 24 hours by default, or the provider's interval, never more often than hourly) go only through the tunnel: with no tunnel they send nothing and are tried again a minute later.
+Not sent: user name, computer name, installed programs, cookies. The request ignores the OS proxy settings. Adding a subscription, pressing refresh and the optional refresh at daemon start (setting `UpdateOnStart`, off by default) go through the tunnel when it is up and directly otherwise. Scheduled updates (every 24 hours by default, or the provider's interval, never more often than hourly) go only through the tunnel: with no tunnel they send nothing and are tried again a minute later.
 
 If the server redirects to a different host, `x-hwid` and `x-device-*` are not forwarded. No redirect carries a `Referer` header (it would hold the subscription URL and its token). A redirect from https to http is refused.
 
 Server latency test: only when you run it, Zatvor makes an HTTP GET to `https://www.gstatic.com/generate_204` through each tested server (via Xray, not directly from your address). The request carries nothing about you.
 
-Tunnel check: on every connect, and on `zatvor check`, Zatvor asks three public IP-check services for your address through the tunnel: `https://api.ipify.org`, `https://ifconfig.co/ip` and `https://icanhazip.com`. All three are queried in parallel, once per check, with a 10 second limit each. The check is OK when two of them name the same address. Each request is a plain GET with no cookies and no identifiers; the services see only the tunnel's exit address. In stage 1b nothing checks in the background: a check runs only on connect and on `zatvor check`.
+Tunnel check: on every connect, on `zatvor check` and in those recovery cases, Zatvor asks three public IP-check services for your address through the tunnel: `https://api.ipify.org`, `https://ifconfig.co/ip` and `https://icanhazip.com`. All three are queried in parallel, once per check, with a 10 second limit each. The check is OK when two of them name the same address. Each request is a plain GET with no cookies and no identifiers; the services see only the tunnel's exit address. The same check, with the same three services, also runs when Zatvor recovers by itself: after Xray restarts following a crash, when the proxy could not be applied and is retried (every 10 seconds), and after a geo-set switch and its rollback. There is no timer that checks while everything works.
 
 Geo data: the first connect with a Happ profile that names geo files Zatvor does not bundle downloads them through the tunnel from the URLs in that profile (https only). Bundled geo files are checked against pinned SHA-256 values.
 
