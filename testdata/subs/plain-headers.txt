@@ -1,0 +1,6 @@
+#profile-title: base64:UkVQTEFDRV9NRQ==
+#Subscription-Userinfo: upload=0; download=0; total=0; expire=0
+
+vless://REPLACE_ME_uuid@a.example.com:443?encryption=none&security=tls&sni=a.example.com&type=tcp#node%20a
+
+trojan://REPLACE_ME_password@b.example.com:443?security=tls&sni=b.example.com#node%20b
