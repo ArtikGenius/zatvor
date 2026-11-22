@@ -32,3 +32,27 @@ F1EE344A-8F54-414D-96AD-5D33B283DC37
 B2A6B53B-B678-4623-97A3-189716701040
 E0C87662-88A1-48CC-8E12-C2CB6A0338D0
 F6058E54-2338-4E4C-9D13-B2C91CD888AE
+
+# Fake UUIDs in stage 1a tests and docs; none identifies a real account,
+# panel or device.
+# Nil UUID: ADR 0008 vector (docs/decisions/0008-hwid-algorithm.md), the plan
+# (docs/superpowers/plans/2026-11-22-stage-1a-core-engine.md) and
+# internal/hwid/hwid_test.go as the all-zero MachineGuid.
+00000000-0000-0000-0000-000000000000
+# internal/hwid/hwid_test.go: second synthetic MachineGuid (all zero, last digit 1).
+00000000-0000-0000-0000-000000000001
+# ADR 0008 case-folding vector and internal/hwid/hwid_test.go: synthetic GUID
+# whose only non-zero part is "abcd"; matching is case-insensitive via the
+# lowercase form, so this entry also covers the ...ABCD spelling.
+00000000-0000-0000-0000-00000000abcd
+# Sequential-digit placeholder user id in internal/profile, internal/store and
+# internal/validate tests.
+11111111-2222-3333-4444-555555555555
+# internal/subfetch/fetch_test.go: zero-filled version-4 style UUID standing in
+# for a subscription user id.
+00000000-0000-4000-8000-000000000000
+# internal/validate/xraytest_test.go: mixed-case placeholder checking that the
+# scrubber matches UUIDs case-insensitively; counting pattern, not a real id.
+AbCdEf01-2345-6789-abcd-ef0123456789
+# tools/secretscan/staged_test.go: throwaway id used to exercise the staged scan.
+12345678-1234-1234-1234-123456789abc
