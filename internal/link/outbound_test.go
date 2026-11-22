@@ -2,6 +2,7 @@ package link
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -83,7 +84,7 @@ func dig(m map[string]any, keys ...string) any {
 }
 
 func TestOutboundRealityVision(t *testing.T) {
-	m := outboundJSON(t, "vless://REPLACE_ME_uuid@reality.example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.org&fp=chrome&pbk=REPLACE_ME_pbk&sid=ab12&spx=%2F&type=tcp#r")
+	m := outboundJSON(t, "vless://REPLACE_ME_uuid@reality.example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.org&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=ab12&spx=%2F&type=tcp#r")
 	if m["protocol"] != "vless" || m["tag"] != "proxy" {
 		t.Fatalf("bad header: %v", m)
 	}
@@ -94,7 +95,7 @@ func TestOutboundRealityVision(t *testing.T) {
 	if dig(m, "streamSettings", "security") != "reality" || dig(m, "streamSettings", "network") != "tcp" {
 		t.Fatalf("stream = %v", m["streamSettings"])
 	}
-	want := map[string]any{"serverName": "www.example.org", "fingerprint": "chrome", "publicKey": "REPLACE_ME_pbk", "shortId": "ab12", "spiderX": "/"}
+	want := map[string]any{"serverName": "www.example.org", "fingerprint": "chrome", "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "shortId": "ab12", "spiderX": "/"}
 	if !reflect.DeepEqual(dig(m, "streamSettings", "realitySettings"), want) {
 		t.Fatalf("reality = %v", dig(m, "streamSettings", "realitySettings"))
 	}
@@ -112,12 +113,12 @@ func TestOutboundXHTTPExtraIsObject(t *testing.T) {
 }
 
 func TestOutboundWSGRPCNone(t *testing.T) {
-	m := outboundJSON(t, "vless://REPLACE_ME_uuid@ws.example.com:8443?security=tls&sni=ws.example.com&alpn=h2%2Chttp%2F1.1&type=ws&path=%2Fws&host=h.example.com&allowInsecure=1#w")
+	m := outboundJSON(t, "vless://REPLACE_ME_uuid@ws.example.com:8443?security=tls&sni=ws.example.com&alpn=h2%2Chttp%2F1.1&type=ws&path=%2Fws&host=h.example.com#w")
 	if dig(m, "streamSettings", "wsSettings", "path") != "/ws" || dig(m, "streamSettings", "wsSettings", "host") != "h.example.com" {
 		t.Fatalf("ws = %v", m["streamSettings"])
 	}
 	tls := dig(m, "streamSettings", "tlsSettings").(map[string]any)
-	if !reflect.DeepEqual(tls["alpn"], []any{"h2", "http/1.1"}) || tls["allowInsecure"] != true {
+	if !reflect.DeepEqual(tls["alpn"], []any{"h2", "http/1.1"}) || tls["allowInsecure"] != nil {
 		t.Fatalf("tls = %v", tls)
 	}
 	m = outboundJSON(t, "vless://REPLACE_ME_uuid@g.example.com:443?security=tls&type=grpc&serviceName=svc&mode=multi#g")
@@ -173,5 +174,28 @@ func TestOutboundErrors(t *testing.T) {
 		} else if strings.Contains(err.Error(), "REPLACE_ME") {
 			t.Errorf("error leaks secret: %v", err)
 		}
+	}
+}
+
+func TestOutboundInsecureTLS(t *testing.T) {
+	for _, l := range []string{
+		"vless://REPLACE_ME@h.example.com:443?security=tls&allowInsecure=1#i",
+		"trojan://REPLACE_ME@h.example.com:443?insecure=1#i",
+		"hysteria2://REPLACE_ME@h.example.com:443?insecure=1#i",
+	} {
+		n, err := Parse(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Outbound(n, "proxy")
+		if !errors.Is(err, ErrInsecureTLS) || strings.Contains(err.Error(), "REPLACE_ME") {
+			t.Errorf("%.12s: err = %v, want ErrInsecureTLS", l, err)
+		}
+	}
+	// A pin wins over the insecure flag; allowInsecure is never emitted.
+	m := outboundJSON(t, "hysteria2://REPLACE_ME@h.example.com:443?insecure=1&pinSHA256=AA%3ABB%2CCC#p")
+	tls := dig(m, "streamSettings", "tlsSettings").(map[string]any)
+	if tls["pinnedPeerCertSha256"] != "aabb,cc" || tls["allowInsecure"] != nil {
+		t.Fatalf("tls = %v", tls)
 	}
 }

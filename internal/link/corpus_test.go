@@ -3,11 +3,15 @@ package link
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ArtikGenius/zatvor/internal/ojson"
+	"github.com/xtls/xray-core/infra/conf"
 )
 
 type corpusCase struct {
@@ -100,14 +104,54 @@ func TestOutboundCorpus(t *testing.T) {
 		}
 		o, err := Outbound(n, "proxy")
 		if err != nil {
-			if c.want.Params["plugin"] != "" {
-				continue // SIP003 plugins have no Xray equivalent
+			if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrInsecureTLS) {
+				continue // e.g. SIP003 plugins have no Xray equivalent
 			}
 			t.Errorf("%s:%d: %v", c.file, c.line, err)
 			continue
 		}
 		if tag, _ := o.Get("tag"); tag != "proxy" {
 			t.Errorf("%s:%d: tag = %v", c.file, c.line, tag)
+		}
+	}
+}
+
+// TestOutboundBuildsInXray feeds every corpus outbound to xray-core's own
+// config loader, so shapes Xray rejects fail here, not at connect time.
+func TestOutboundBuildsInXray(t *testing.T) {
+	for _, c := range loadCorpus(t) {
+		n, err := Parse(c.link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o, err := Outbound(n, "proxy")
+		if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrInsecureTLS) {
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s:%d: %v", c.file, c.line, err)
+			continue
+		}
+		b, err := ojson.Marshal(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg conf.OutboundDetourConfig
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			t.Errorf("%s:%d: xray rejects JSON: %v", c.file, c.line, err)
+			continue
+		}
+		_, err = cfg.Build()
+		if n.Scheme == "vless" && (n.Params["security"] == "" || n.Params["security"] == "none") {
+			// Xray refuses plaintext vless to a public host already in Build
+			// (the corpus uses example.com hosts); that refusal is expected.
+			if err == nil || !strings.Contains(err.Error(), "vless without TLS") {
+				t.Errorf("%s:%d: want Xray's plaintext-vless refusal, got %v", c.file, c.line, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s:%d (%s): xray Build: %v", c.file, c.line, n.Scheme, err)
 		}
 	}
 }

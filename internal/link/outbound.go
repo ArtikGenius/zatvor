@@ -67,7 +67,11 @@ func Outbound(n Node, tag string) (*ojson.Object, error) {
 	case "hysteria2":
 		out.Set("protocol", "hysteria")
 		out.Set("settings", obj("version", 2, "address", n.Address, "port", n.Port))
-		out.Set("streamSettings", hysteriaStream(n))
+		hs, err := hysteriaStream(n)
+		if err != nil {
+			return nil, err
+		}
+		out.Set("streamSettings", hs)
 		return out, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupported, printable(n.Scheme))
@@ -80,18 +84,17 @@ func Outbound(n Node, tag string) (*ojson.Object, error) {
 	return out, nil
 }
 
-func hysteriaStream(n Node) *ojson.Object {
+func hysteriaStream(n Node) (*ojson.Object, error) {
 	p := n.Params
 	sni := p["sni"]
 	if sni == "" {
 		sni = n.Address
 	}
 	tls := obj("serverName", sni, "alpn", []any{"h3"})
-	if isTrue(p["insecure"]) {
-		tls.Set("allowInsecure", true)
-	}
 	if pin := p["pinSHA256"]; pin != "" {
-		tls.Set("pinnedPeerCertSha256", []any{strings.ToLower(strings.ReplaceAll(pin, ":", ""))})
+		tls.Set("pinnedPeerCertSha256", pinList(pin))
+	} else if isTrue(p["insecure"]) {
+		return nil, fmt.Errorf("%w: %s", ErrInsecureTLS, n.Scheme)
 	}
 	ss := obj("network", "hysteria", "security", "tls", "tlsSettings", tls,
 		"hysteriaSettings", obj("version", 2, "auth", p["password"]))
@@ -99,7 +102,17 @@ func hysteriaStream(n Node) *ojson.Object {
 		mask := obj("type", "salamander", "settings", obj("password", p["obfs-password"]))
 		ss.Set("finalmask", obj("udp", []any{mask}))
 	}
-	return ss
+	return ss, nil
+}
+
+// pinList turns a pinSHA256 value (hex, colons optional, several separated by
+// commas) into Xray's comma-separated lowercase hex string.
+func pinList(pin string) string {
+	parts := strings.Split(pin, ",")
+	for i, s := range parts {
+		parts[i] = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), ":", ""))
+	}
+	return strings.Join(parts, ",")
 }
 
 // stream builds streamSettings for the TCP-based protocols.
@@ -142,8 +155,10 @@ func stream(n Node) (*ojson.Object, error) {
 			}
 			tls.Set("alpn", list)
 		}
-		if isTrue(p["allowInsecure"]) || isTrue(p["insecure"]) {
-			tls.Set("allowInsecure", true)
+		if pin := p["pinSHA256"]; pin != "" {
+			tls.Set("pinnedPeerCertSha256", pinList(pin))
+		} else if isTrue(p["allowInsecure"]) || isTrue(p["insecure"]) {
+			return nil, fmt.Errorf("%w: %s", ErrInsecureTLS, n.Scheme)
 		}
 		ss.Set("tlsSettings", tls)
 	case "reality":

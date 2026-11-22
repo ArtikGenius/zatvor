@@ -17,6 +17,9 @@ var (
 	// ErrEncrypted marks a link that is encrypted for one client (happ://crypt*,
 	// INCY) and cannot be read without that client's key.
 	ErrEncrypted = errors.New("link: encrypted link")
+	// ErrInsecureTLS marks a node that asks to skip TLS verification without a
+	// pinned certificate; Xray no longer supports allowInsecure.
+	ErrInsecureTLS = errors.New("link: insecure TLS without a pinned certificate is not supported")
 )
 
 // Node is one proxy server as found in a share link. Params carries every
