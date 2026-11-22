@@ -100,8 +100,7 @@ func main() {
 	case !selfTest:
 		go func() {
 			// Open once at start, so the app is visibly running.
-			time.Sleep(1500 * time.Millisecond)
-			if err := tray.PositionWindow(popup, gap); err != nil {
+			if err := positionWhenReady(tray, popup); err != nil {
 				logf("start: PositionWindow: %v", err)
 			}
 			popup.Show()
@@ -167,6 +166,20 @@ func assets(painted chan<- paintReport) http.Handler {
 
 var uiEvents = make(chan string, 64)
 
+// positionWhenReady places the popup next to the tray icon, retrying for up
+// to 15 s while the tray is not running yet (app.Run has just started).
+func positionWhenReady(tray *application.SystemTray, popup *application.WebviewWindow) error {
+	var err error
+	for range 30 {
+		time.Sleep(500 * time.Millisecond)
+		if err = tray.PositionWindow(popup, gap); err == nil {
+			return nil
+		}
+	}
+	logf("PositionWindow: %v", err)
+	return err
+}
+
 // logPath is ~/Library/Logs/ZatvorProto/wails.log (macOS) or
 // %LOCALAPPDATA%\ZatvorProto\wails.log (Windows).
 func logPath() string {
@@ -219,8 +232,8 @@ func runUICheck(tray *application.SystemTray, popup *application.WebviewWindow) 
 			}
 		}
 	}
-	// The page loads on the first Show (the window starts hidden).
-	if err := tray.PositionWindow(popup, gap); err != nil {
+	// The goroutine starts before app.Run: wait for the tray to run.
+	if err := positionWhenReady(tray, popup); err != nil {
 		res["positionError"] = err.Error()
 	}
 	popup.Show()
