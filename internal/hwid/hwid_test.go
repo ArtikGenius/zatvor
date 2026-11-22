@@ -70,6 +70,10 @@ func TestMachineIDNormalised(t *testing.T) {
 			t.Errorf("machine id %q not normalised", in)
 		}
 	}
+	const abcd = "91b5d68392869f6d1f5aa4038b2c0289"
+	if got := ID("  00000000-0000-0000-0000-00000000ABCD\n", "sub.example.com"); got != abcd {
+		t.Fatalf("machine id vector changed: %s", got)
+	}
 	if got := ID("00000000-0000-0000-0000-000000000000", "Sub.Example.com:443"); got != goldenVector {
 		t.Fatalf("golden vector changed: %s", got)
 	}

@@ -55,3 +55,12 @@ x-hwid            = 32fe07fe2e30f9601fdac3197ad16506
 
 Cross-checked with `printf '%s' "<machine_id><host>" | openssl dgst -sha256 -hmac zatvor-hwid-v1`. Pinned by
 `TestHWIDVector` in `internal/hwid`.
+
+Machine id normalisation vector:
+
+```
+machine_id (raw)  = "  00000000-0000-0000-0000-00000000ABCD\n"
+normalised        = 00000000-0000-0000-0000-00000000abcd
+subscription_host = sub.example.com
+x-hwid            = 91b5d68392869f6d1f5aa4038b2c0289
+```
