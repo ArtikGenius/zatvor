@@ -37,5 +37,16 @@ keeps its `v1` name for the same reason.
 - Stage 1 implements it exactly and adds a golden-vector test that fails on any change.
 - A machine reinstall that keeps the machine id keeps its slot; a changed machine id (new OS install on
   Windows) is a new device, as with any HWID scheme.
-- The exact form of `subscription_host` (case, port, path) is not fixed by the spec. Stage 1 must
-  specify it here, with a golden vector, before the first release; from then on it is frozen too.
+- `subscription_host` is the lower-case hostname of the subscription URL (`url.Hostname()` lower-cased): no
+  port, no path, no brackets around IPv6. `hwid.ID` does not normalise; callers pass that form. Frozen.
+
+## Golden vector
+
+```
+machine_id        = 00000000-0000-0000-0000-000000000000
+subscription_host = sub.example.com
+x-hwid            = 32fe07fe2e30f9601fdac3197ad16506
+```
+
+Cross-checked with `printf '%s' "<machine_id><host>" | openssl dgst -sha256 -hmac zatvor-hwid-v1`. Pinned by
+`TestHWIDVector` in `internal/hwid`.
