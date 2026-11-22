@@ -80,21 +80,36 @@ func (w *walker) warn(format string, a ...any) {
 
 func (w *walker) fail(path string, format string, a ...any) {
 	if w.err == nil {
-		w.err = fmt.Errorf("%s: %s", path, fmt.Sprintf(format, a...))
+		w.err = &SchemaError{Path: path, Msg: fmt.Sprintf(format, a...)}
 	}
+}
+
+// SchemaError is a config that does not match the Xray schema. Path is the
+// JSON path of the bad value ("outbounds[0].settings.port"), empty when the
+// document itself is not valid JSON.
+type SchemaError struct {
+	Path string
+	Msg  string
+}
+
+func (e *SchemaError) Error() string {
+	if e.Path == "" {
+		return e.Msg
+	}
+	return e.Path + ": " + e.Msg
 }
 
 // Schema checks cfg against the xray-core infra/conf types. Unknown keys and
 // unchecked protocols are returned as warnings; malformed JSON or a value of
-// the wrong type is an error naming the JSON path.
+// the wrong type is a *SchemaError naming the JSON path.
 func Schema(cfg []byte) (warnings []string, err error) {
 	var root json.RawMessage
 	dec := json.NewDecoder(bytes.NewReader(cfg))
 	if err := dec.Decode(&root); err != nil {
-		return nil, fmt.Errorf("config is not valid JSON: %w", err)
+		return nil, &SchemaError{Msg: "config is not valid JSON: " + err.Error()}
 	}
 	if dec.More() {
-		return nil, fmt.Errorf("config is not valid JSON: trailing data")
+		return nil, &SchemaError{Msg: "config is not valid JSON: trailing data"}
 	}
 	w := &walker{}
 	w.walk("", root, reflect.TypeFor[conf.Config](), true)

@@ -1,9 +1,50 @@
 package validate
 
 import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestMain turns the test binary into a fake "xray": started as
+// `<bin> run -test -config stdin:` it rejects the config, echoing it.
+func TestMain(m *testing.M) {
+	if len(os.Args) == 5 && os.Args[1] == "run" && os.Args[2] == "-test" {
+		in, _ := io.ReadAll(os.Stdin)
+		os.Stderr.WriteString("Failed to start: " + string(in) + "\n")
+		os.Exit(23)
+	}
+	os.Exit(m.Run())
+}
+
+func TestXrayTestErrorsTyped(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := []byte(`{"outbounds":[{"protocol":"vless","settings":{"password":"SECRET_REPLACE_ME"}}]}`)
+	err = XrayTest(context.Background(), self, cfg, t.TempDir())
+	var xe *XrayTestError
+	if !errors.As(err, &xe) {
+		t.Fatalf("err = %#v, want *XrayTestError", err)
+	}
+	if xe.ExitCode != 23 || !strings.Contains(xe.Output, "Failed to start") || strings.Contains(err.Error(), "SECRET_REPLACE_ME") {
+		t.Fatalf("XrayTestError = %+v", xe)
+	}
+	missing := filepath.Join(t.TempDir(), "no-xray")
+	if err := XrayTest(context.Background(), missing, cfg, t.TempDir()); !errors.Is(err, ErrXrayNotRun) {
+		t.Fatalf("missing binary: %v, want ErrXrayNotRun", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := XrayTest(ctx, self, cfg, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled: %v, want context.Canceled", err)
+	}
+}
 
 func TestScrubSecrets(t *testing.T) {
 	cfg := []byte(`{

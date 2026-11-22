@@ -4,6 +4,7 @@ package validate
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,10 +37,11 @@ func TestXrayTestRejects(t *testing.T) {
 	defer cancel()
 	cfg := `{"outbounds":[{"protocol":"nosuchproto","tag":"p","settings":{"password":"SECRET_REPLACE_ME"}}]}`
 	err := XrayTest(ctx, bin, []byte(cfg), t.TempDir())
-	if err == nil {
-		t.Fatal("expected error")
+	var xe *XrayTestError
+	if !errors.As(err, &xe) {
+		t.Fatalf("err = %v, want *XrayTestError", err)
 	}
-	if !strings.Contains(err.Error(), "nosuchproto") {
+	if !strings.Contains(xe.Output, "nosuchproto") {
 		t.Errorf("Xray message missing: %v", err)
 	}
 	if strings.Contains(err.Error(), "SECRET_REPLACE_ME") {
@@ -51,7 +53,7 @@ func TestXrayTestCancel(t *testing.T) {
 	bin := xrayPath(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := XrayTest(ctx, bin, []byte(`{}`), filepath.Join(t.TempDir())); err == nil {
+	if err := XrayTest(ctx, bin, []byte(`{}`), filepath.Join(t.TempDir())); !errors.Is(err, context.Canceled) {
 		t.Fatal("expected error on cancelled context")
 	}
 }

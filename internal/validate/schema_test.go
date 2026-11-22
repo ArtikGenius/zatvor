@@ -2,6 +2,7 @@ package validate
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,6 +123,18 @@ func TestWrongType(t *testing.T) {
 	_, err := Schema([]byte(cases["port string"]))
 	if err == nil || !strings.Contains(err.Error(), "outbounds[0].settings.port") {
 		t.Fatalf("err = %v", err)
+	}
+	for cfg, path := range map[string]string{
+		cases["port string"]:    "outbounds[0].settings.port",
+		cases["log not object"]: "log",
+		cases["not json"]:       "",
+		`{} {}`:                 "",
+	} {
+		_, err := Schema([]byte(cfg))
+		var se *SchemaError
+		if !errors.As(err, &se) || se.Path != path {
+			t.Errorf("%s: err = %#v, want SchemaError{Path: %q}", cfg, err, path)
+		}
 	}
 }
 

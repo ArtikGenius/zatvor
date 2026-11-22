@@ -26,10 +26,25 @@ var plainKeys = setOf("protocol", "tag", "network", "security", "type", "flow", 
 
 const minSecretLen = 6
 
+// ErrXrayNotRun marks an Xray binary that could not be started.
+var ErrXrayNotRun = errors.New("validate: xray could not be started")
+
+// XrayTestError is Xray rejecting a config: its exit code and its output with
+// every secret value of the config replaced by ***.
+type XrayTestError struct {
+	ExitCode int
+	Output   string
+}
+
+func (e *XrayTestError) Error() string {
+	return fmt.Sprintf("xray run -test failed (exit status %d): %s", e.ExitCode, e.Output)
+}
+
 // XrayTest runs `xray run -test -config stdin:` on cfg with
 // XRAY_LOCATION_ASSET=assetDir in an otherwise minimal environment. The
-// context cancels the process. The error carries Xray's output with every
-// secret value from cfg replaced by ***.
+// context cancels the process (the error then wraps ctx.Err()). A rejected
+// config is a *XrayTestError; a binary that cannot be started is
+// ErrXrayNotRun.
 func XrayTest(ctx context.Context, xrayPath string, cfg []byte, assetDir string) error {
 	cmd := exec.CommandContext(ctx, xrayPath, "run", "-test", "-config", "stdin:")
 	cmd.Env = minimalEnv(assetDir)
@@ -50,9 +65,9 @@ func XrayTest(ctx context.Context, xrayPath string, cfg []byte, assetDir string)
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
-		return fmt.Errorf("xray run -test failed (%v): %s", ee, msg)
+		return &XrayTestError{ExitCode: ee.ExitCode(), Output: msg}
 	}
-	return fmt.Errorf("xray run -test: %v: %s", err, msg)
+	return fmt.Errorf("%w: %s", ErrXrayNotRun, scrub(err.Error(), cfg))
 }
 
 func minimalEnv(assetDir string) []string {
