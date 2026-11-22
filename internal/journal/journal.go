@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -59,7 +60,18 @@ type line struct {
 	Done string `json:"done,omitempty"`
 }
 
-// Journal is safe for concurrent use by one process.
+type doneLine struct {
+	Done string `json:"done"`
+}
+
+// ErrBlockedByNewer is the Err of a Failed result for an entry that was not
+// tried because a newer entry on the same Kind and Target failed to revert.
+var ErrBlockedByNewer = errors.New("journal: newer entry on the same target not reverted")
+
+// Journal is safe for concurrent use by one process. One journal file is used
+// by one process at a time (the daemon holds the single-instance lock; the
+// supervisor reverts only after its child exited). Reverter methods are called
+// with the journal mutex held and must not call back into the Journal.
 type Journal struct {
 	mu   sync.Mutex
 	dir  string
@@ -126,37 +138,51 @@ func (j *Journal) append(v any) error {
 		return err
 	}
 	b = append(b, '\n')
-	f, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(j.path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
+	defer f.Close()
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	if size > 0 {
+		var last [1]byte
+		if _, err := f.ReadAt(last[:], size-1); err != nil {
+			return err
+		}
+		if last[0] != '\n' { // fragment from an earlier failure: fence it off
+			b = append([]byte{'\n'}, b...)
+		}
+	}
+	rollback := func() { _ = f.Truncate(size) }
+	if _, err := f.WriteAt(b, size); err != nil {
+		rollback()
 		return err
 	}
 	if err := j.syncFile(f); err != nil {
-		f.Close()
+		rollback()
 		return err
 	}
-	return f.Close()
+	return nil
 }
 
 // Begin appends the entry and fsyncs it, then returns its ID. Call it before
-// applying the change. An empty e.ID gets a random one.
+// applying the change. The ID is always generated here; e.ID is ignored, so
+// an ID can never be reused after a done line closed it.
 func (j *Journal) Begin(e Entry) (string, error) {
-	if e.ID == "" {
-		id, err := newID()
-		if err != nil {
-			return "", err
-		}
-		e.ID = id
+	id, err := newID()
+	if err != nil {
+		return "", err
 	}
+	e.ID = id
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if err := j.append(line{Entry: e}); err != nil {
+	if err := j.append(e); err != nil {
 		return "", err
 	}
 	// Synced on every Begin: the file may have just been created or renamed.
@@ -180,7 +206,7 @@ func (j *Journal) done(id string) error {
 	}
 	for _, e := range p {
 		if e.ID == id {
-			return j.append(line{Done: id})
+			return j.append(doneLine{Done: id})
 		}
 	}
 	return nil
@@ -239,7 +265,9 @@ func canon(b json.RawMessage) []byte {
 		return b
 	}
 	var v any
-	if json.Unmarshal(buf.Bytes(), &v) != nil {
+	dec := json.NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.UseNumber()
+	if dec.Decode(&v) != nil {
 		return buf.Bytes()
 	}
 	c, err := json.Marshal(v) // sorted keys
@@ -262,32 +290,45 @@ func (j *Journal) RevertAll(rs map[string]Reverter) []RevertResult {
 		return []RevertResult{{Outcome: Failed, Err: err}}
 	}
 	var res []RevertResult
+	blocked := map[[2]string]bool{}
 	for i := len(p) - 1; i >= 0; i-- {
 		e := p[i]
 		r := RevertResult{Entry: e}
+		key := [2]string{e.Kind, e.Target}
+		fail := func(err error) {
+			r.Outcome, r.Err = Failed, err
+			blocked[key] = true
+			res = append(res, r)
+		}
+		if blocked[key] {
+			fail(ErrBlockedByNewer)
+			continue
+		}
 		rv, ok := rs[e.Kind]
 		if !ok || rv == nil {
-			r.Outcome, r.Err = Failed, fmt.Errorf("%w %q", ErrNoReverter, e.Kind)
-			res = append(res, r)
+			fail(fmt.Errorf("%w %q", ErrNoReverter, e.Kind))
 			continue
 		}
 		cur, err := rv.Current(e.Target)
 		if err != nil {
-			r.Outcome, r.Err = Failed, err
-			res = append(res, r)
+			fail(err)
 			continue
 		}
-		if !bytes.Equal(canon(cur), canon(e.Applied)) {
-			r.Outcome = SkippedChangedByOther
-		} else if err := rv.Restore(e.Target, e.Prev); err != nil {
-			r.Outcome, r.Err = Failed, err
-			res = append(res, r)
-			continue
-		} else {
+		switch {
+		case bytes.Equal(canon(cur), canon(e.Applied)):
+			if err := rv.Restore(e.Target, e.Prev); err != nil {
+				fail(err)
+				continue
+			}
 			r.Outcome = Restored
+		case bytes.Equal(canon(cur), canon(e.Prev)):
+			r.Outcome = Restored // already reverted; the crash hit before Done
+		default:
+			r.Outcome = SkippedChangedByOther
 		}
 		if err := j.done(e.ID); err != nil {
-			r.Outcome, r.Err = Failed, err
+			fail(err)
+			continue
 		}
 		res = append(res, r)
 	}
