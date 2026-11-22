@@ -1,0 +1,4 @@
+# ~/.bashrc
+alias ll="ls -l"
+PROMPT_COMMAND="history -a"
+export EDITOR=vim

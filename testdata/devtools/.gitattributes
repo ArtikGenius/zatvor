@@ -1,0 +1,2 @@
+# Fixtures and goldens are byte-exact (CRLF, BOM, UTF-16): no EOL conversion.
+* -text

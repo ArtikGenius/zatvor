@@ -1,0 +1,6 @@
+﻿{
+    // Corporate proxy, set by IT
+    "http.proxy": "http://proxy.corp.example:3128",
+    "http.proxySupport": "on" /* was fallback */,
+    "telemetry.telemetryLevel": "off"
+}

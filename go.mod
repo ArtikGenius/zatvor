@@ -5,6 +5,7 @@ go 1.27
 toolchain go1.27.4
 
 require (
+	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	github.com/xtls/xray-core v1.260327.1-0.20261109052709-676eaf66f8f0
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.24.0

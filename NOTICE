@@ -35,6 +35,12 @@ google.golang.org/protobuf (BSD-3-Clause)
   https://github.com/protocolbuffers/protobuf-go
   Copyright 2018 The Go Authors. Go module, compiled into Zatvor binaries.
 
+github.com/tailscale/hujson (BSD-3-Clause)
+  https://github.com/tailscale/hujson  v0.0.0-20260727124030-b80ff77dac4f
+  Copyright (c) 2019 Tailscale Inc. Go module, compiled into Zatvor binaries:
+  parses JSON with comments (VS Code and Claude Code settings) so that they
+  are edited in place.
+
 Prototype-only components (proto/tun, stage 0c; not part of any Zatvor
 release unless ADR 0003 picks variant B):
 

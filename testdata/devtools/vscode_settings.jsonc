@@ -1,0 +1,8 @@
+// VS Code user settings
+{
+	// Editor
+	"editor.fontSize": 14, // big enough
+	/* Files */
+	"files.eol": "\r\n",
+	"workbench.colorTheme": "Default Dark+",
+}
