@@ -6,7 +6,6 @@ package gen
 import (
 	"errors"
 	"fmt"
-	"sort"
 
 	"github.com/ArtikGenius/zatvor/internal/happ"
 	"github.com/ArtikGenius/zatvor/internal/link"
@@ -65,15 +64,17 @@ var logLevels = map[string]bool{"debug": true, "info": true, "warning": true, "e
 // rules in their own order and content, other routing keys untouched) and
 // dns exactly, while its inbounds are replaced by ours.
 //
-// Inbound tags: our system-proxy inbound is tagged "mixed-in", except when
-// the provider's inbounds used exactly one distinct tag (and it is not one of
-// our reserved tags): then that tag is kept, so provider rules with
-// inboundTag still match. When the provider used several tags, every such
-// inboundTag value is rewritten to "mixed-in" and a warning is reported;
-// rules are never dropped.
+// Inbound tags: our system-proxy inbound is tagged "mixed-in", except that
+// it takes the tag of the first provider inbound whose protocol is socks,
+// http or mixed (else of the first provider inbound), unless that tag is one
+// of our reserved tags. Provider routing is never rewritten: rules naming
+// other provider inbound tags stay as they are and, because those inbounds
+// are replaced, will not match; a Report warning lists those tags.
 //
 // ProxyTag for a full JSON is the target (outboundTag or balancerTag) of the
-// first catch-all rule, else the first outbound (Xray's default). A catch-all
+// first catch-all rule, else the first outbound (Xray's default). If that
+// outbound is freedom, blackhole, dns or loopback, the first outbound with
+// any other protocol is used instead (an error if there is none). A catch-all
 // is a rule with a target whose only other keys are type, ruleTag and
 // network "tcp,udp"; any other condition makes it not a catch-all.
 //
@@ -281,15 +282,23 @@ func buildConfig(in Input) (*ojson.Object, Report, error) {
 	}
 
 	// Preset and Happ sources replace routing and dns entirely.
-	var rp *replacement
-	if sourceKind(in.Profile.RoutingSource) != profile.SourceProvider {
-		if proxy.balancer {
-			// The replaced routing drops the provider's balancers.
-			proxy = target{tag: firstOutboundTag(outs, directTag, blockTag)}
-			if proxy.tag == "" {
-				return nil, Report{}, fmt.Errorf("%w: no tagged proxy outbound", ErrInvalidConfig)
-			}
+	replaced := sourceKind(in.Profile.RoutingSource) != profile.SourceProvider
+	if replaced && proxy.balancer {
+		// The replaced routing drops the provider's balancers.
+		proxy = target{tag: firstOutboundTag(outs, directTag, blockTag)}
+		if proxy.tag == "" {
+			return nil, Report{}, fmt.Errorf("%w: no tagged proxy outbound", ErrInvalidConfig)
 		}
+	}
+	if !proxy.balancer {
+		t, err := realProxy(proxy.tag, outs)
+		if err != nil {
+			return nil, Report{}, err
+		}
+		proxy = target{tag: t}
+	}
+	var rp *replacement
+	if replaced {
 		rp, err = replacementFor(in, proxy.tag, directTag, blockTag, false)
 		if err != nil {
 			return nil, Report{}, err
@@ -317,28 +326,28 @@ func buildConfig(in Input) (*ojson.Object, Report, error) {
 		}
 	}
 
-	// Inbounds: replaced; tag choice keeps provider inboundTag rules valid.
+	// Inbounds: replaced. Our mixed inbound takes the tag of the first
+	// provider inbound that is socks, http or mixed (else the first one), so
+	// rules naming it still match. Provider routing is never rewritten.
 	mixedTag := TagMixed
 	if iv, ok := root.Get("inbounds"); ok {
 		old, _ := iv.([]any)
-		names, tags := describeInbounds(old)
-		rep.ReplacedInbounds = names
-		if len(tags) == 1 && !reservedTag(tags[0]) {
-			mixedTag = tags[0]
-		} else if len(tags) > 1 || (len(tags) == 1 && reservedTag(tags[0])) {
-			from := map[string]bool{}
-			for _, t := range tags {
-				from[t] = true
-			}
-			if rp == nil {
-				if v, ok := rt.Get("rules"); ok {
-					if rules, ok := v.([]any); ok {
-						rewriteInboundTags(rules, from, TagMixed)
-					}
+		rep.ReplacedInbounds = describeInbounds(old)
+		keep := chooseMixedTag(old)
+		if keep != "" && !reservedTag(keep) {
+			mixedTag = keep
+		}
+		if rp == nil {
+			var lost []string
+			for _, t := range referencedInboundTags(rt, old) {
+				if t != mixedTag {
+					lost = append(lost, t)
 				}
 			}
-			rep.Warnings = append(rep.Warnings, fmt.Sprintf(
-				"provider inbound tags %v replaced by %q in routing rules", tags, TagMixed))
+			if len(lost) > 0 {
+				rep.Warnings = append(rep.Warnings, fmt.Sprintf(
+					"provider routing rules naming inbound tags %v will not match: those inbounds are replaced", lost))
+			}
 		}
 	}
 
@@ -359,30 +368,77 @@ func reservedTag(t string) bool {
 	return t == TagAPI || t == TagProbe || t == TagDevTools
 }
 
-// describeInbounds names the provider inbounds and lists their distinct tags
-// in sorted order.
-func describeInbounds(list []any) (names, tags []string) {
-	seen := map[string]bool{}
+// describeInbounds names the provider inbounds: the tag, or protocol:port
+// when untagged.
+func describeInbounds(list []any) []string {
+	var names []string
 	for _, v := range list {
 		o, ok := v.(*ojson.Object)
 		if !ok {
 			continue
 		}
-		tag, _ := getString(o, "tag")
-		if tag != "" {
+		if tag, _ := getString(o, "tag"); tag != "" {
 			names = append(names, tag)
-			if !seen[tag] {
-				seen[tag] = true
-				tags = append(tags, tag)
-			}
 			continue
 		}
 		proto, _ := getString(o, "protocol")
 		port, _ := o.Get("port")
 		names = append(names, fmt.Sprintf("%s:%v", proto, port))
 	}
-	sort.Strings(tags)
-	return names, tags
+	return names
+}
+
+// chooseMixedTag is the tag of the first provider inbound whose protocol is
+// socks, http or mixed, else of the first provider inbound ("" if untagged).
+func chooseMixedTag(list []any) string {
+	first := ""
+	for i, v := range list {
+		o, ok := v.(*ojson.Object)
+		if !ok {
+			continue
+		}
+		tag, _ := getString(o, "tag")
+		if i == 0 {
+			first = tag
+		}
+		switch p, _ := getString(o, "protocol"); p {
+		case "socks", "http", "mixed":
+			return tag
+		}
+	}
+	return first
+}
+
+// referencedInboundTags lists, in provider order, the provider inbound tags
+// that routing rules name in inboundTag.
+func referencedInboundTags(rt *ojson.Object, inbounds []any) []string {
+	have := map[string]bool{}
+	for _, v := range inbounds {
+		if o, ok := v.(*ojson.Object); ok {
+			if t, _ := getString(o, "tag"); t != "" {
+				have[t] = true
+			}
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	v, _ := rt.Get("rules")
+	rules, _ := v.([]any)
+	for _, r := range rules {
+		o, ok := r.(*ojson.Object)
+		if !ok {
+			continue
+		}
+		iv, _ := o.Get("inboundTag")
+		list, _ := iv.([]any)
+		for _, e := range list {
+			if t, ok := e.(string); ok && have[t] && !seen[t] {
+				seen[t] = true
+				out = append(out, t)
+			}
+		}
+	}
+	return out
 }
 
 func getString(o *ojson.Object, key string) (string, bool) {
@@ -441,6 +497,32 @@ func providerTarget(routing *ojson.Object, outs []any) (target, error) {
 		}
 	}
 	return target{}, fmt.Errorf("%w: first outbound has no tag", ErrInvalidConfig)
+}
+
+// realProxy returns tag unless its outbound is freedom, blackhole, dns or
+// loopback (direct, block or internal), in which case it returns the first
+// outbound with another protocol.
+func realProxy(tag string, outs []any) (string, error) {
+	other := ""
+	for _, v := range outs {
+		o, ok := v.(*ojson.Object)
+		if !ok {
+			continue
+		}
+		t, _ := getString(o, "tag")
+		p, _ := getString(o, "protocol")
+		internal := p == "freedom" || p == "blackhole" || p == "dns" || p == "loopback"
+		if t == tag && !internal {
+			return tag, nil
+		}
+		if other == "" && t != "" && !internal {
+			other = t
+		}
+	}
+	if other == "" {
+		return "", fmt.Errorf("%w: no proxy outbound (only freedom, blackhole, dns or loopback)", ErrInvalidConfig)
+	}
+	return other, nil
 }
 
 // firstOutboundTag is the first tagged outbound other than direct and block.

@@ -314,10 +314,10 @@ func TestRuleLayers(t *testing.T) {
 	}
 }
 
-func TestRuleLayersSourceFirstOutboundIsProbeTarget(t *testing.T) {
-	// A provider whose last catch-all points at a balancer: the probe rule
+func TestProbeRuleTargetsBalancer(t *testing.T) {
+	// A provider whose first catch-all points at a balancer: the probe rule
 	// targets the balancer.
-	cfg := `{"outbounds":[{"tag":"a","protocol":"freedom"},{"tag":"b","protocol":"freedom"}],
+	cfg := `{"outbounds":[{"tag":"a","protocol":"vless"},{"tag":"b","protocol":"vless"}],
 	"routing":{"balancers":[{"tag":"bal","selector":["a","b"]}],
 	"rules":[{"type":"field","network":"tcp,udp","balancerTag":"bal"}]}}`
 	p := profile.Profile{Config: parseObj(t, []byte(cfg))}
@@ -335,7 +335,7 @@ func TestRuleLayersSourceFirstOutboundIsProbeTarget(t *testing.T) {
 }
 
 func TestProxyTagFirstCatchAllWins(t *testing.T) {
-	cfg := `{"outbounds":[{"tag":"a","protocol":"freedom"},{"tag":"b","protocol":"freedom"},{"tag":"c","protocol":"freedom"}],
+	cfg := `{"outbounds":[{"tag":"a","protocol":"vless"},{"tag":"b","protocol":"vless"},{"tag":"c","protocol":"vless"}],
 	"routing":{"rules":[{"type":"field","domain":["x"],"outboundTag":"c"},
 	{"type":"field","network":"tcp,udp","outboundTag":"b"},
 	{"type":"field","network":"tcp,udp","outboundTag":"c"}]}}`
@@ -346,7 +346,7 @@ func TestProxyTagFirstCatchAllWins(t *testing.T) {
 }
 
 func TestProxyTagFallsBackToFirstOutbound(t *testing.T) {
-	cfg := `{"outbounds":[{"tag":"first","protocol":"freedom"}],"routing":{"rules":[{"type":"field","domain":["x"],"outboundTag":"other"}]}}`
+	cfg := `{"outbounds":[{"tag":"first","protocol":"vless"}],"routing":{"rules":[{"type":"field","domain":["x"],"outboundTag":"other"}]}}`
 	_, rep := mustBuild(t, baseInput(profile.Profile{Config: parseObj(t, []byte(cfg))}))
 	if rep.ProxyTag != "first" {
 		t.Fatalf("proxy tag = %q", rep.ProxyTag)
@@ -455,7 +455,7 @@ func TestAwkwardCharactersSurviveParse(t *testing.T) {
 
 func TestProviderInboundTags(t *testing.T) {
 	cfg := func(inb, rules string) profile.Profile {
-		s := `{"inbounds":` + inb + `,"outbounds":[{"tag":"proxy","protocol":"freedom"}],
+		s := `{"inbounds":` + inb + `,"outbounds":[{"tag":"proxy","protocol":"vless"}],
 		"routing":{"rules":` + rules + `}}`
 		return profile.Profile{Config: parseObj(t, []byte(s))}
 	}
@@ -472,29 +472,11 @@ func TestProviderInboundTags(t *testing.T) {
 			t.Fatalf("rule changed: %v", rules[len(rules)-1])
 		}
 	})
-	t.Run("several tags rewritten with warning", func(t *testing.T) {
-		p := cfg(`[{"tag":"a","protocol":"socks","port":1},{"tag":"b","protocol":"http","port":2},{"protocol":"http","port":3}]`,
-			`[{"type":"field","inboundTag":["a","b","other"],"outboundTag":"direct"},{"type":"field","inboundTag":["a"],"outboundTag":"proxy"}]`)
-		out, rep := mustBuild(t, baseInput(p))
-		m := decode(t, out)
-		if dig(m, "inbounds", 0, "tag") != "mixed-in" || len(rep.Warnings) != 1 {
-			t.Fatalf("tag = %v warnings = %v", dig(m, "inbounds", 0, "tag"), rep.Warnings)
-		}
-		rules := m["routing"].(map[string]any)["rules"].([]any)
-		n := len(rules)
-		if marshalAny(t, dig(rules[n-2], "inboundTag")) != `["mixed-in","other"]` ||
-			marshalAny(t, dig(rules[n-1], "inboundTag")) != `["mixed-in"]` || n != 4 {
-			t.Fatalf("rules = %v", rules)
-		}
-		if marshalAny(t, rep.ReplacedInbounds) != `["a","b","http:3"]` {
-			t.Fatalf("replaced = %v", rep.ReplacedInbounds)
-		}
-	})
 	t.Run("reserved provider tag is not kept", func(t *testing.T) {
 		p := cfg(`[{"tag":"api","protocol":"socks","port":1}]`, `[]`)
 		out, rep := mustBuild(t, baseInput(p))
 		m := decode(t, out)
-		if dig(m, "inbounds", 0, "tag") != "mixed-in" || len(rep.Warnings) != 1 {
+		if dig(m, "inbounds", 0, "tag") != "mixed-in" || len(rep.Warnings) != 0 {
 			t.Fatalf("tag = %v warnings = %v", dig(m, "inbounds", 0, "tag"), rep.Warnings)
 		}
 	})
@@ -505,6 +487,64 @@ func TestProviderInboundTags(t *testing.T) {
 			t.Fatal("tag")
 		}
 	})
+}
+
+func TestProviderMultipleInboundTags(t *testing.T) {
+	rules := `[{"type":"field","inboundTag":["a","b","other"],"outboundTag":"direct"},{"type":"field","inboundTag":["c"],"outboundTag":"proxy"}]`
+	cfg := `{"inbounds":[{"tag":"a","protocol":"vmess","port":1},{"tag":"b","protocol":"http","port":2},{"tag":"c","protocol":"socks","port":3},{"protocol":"http","port":4}],
+	"outbounds":[{"tag":"proxy","protocol":"vless"}],"routing":{"rules":` + rules + `}}`
+	out, rep := mustBuild(t, baseInput(profile.Profile{Config: parseObj(t, []byte(cfg))}))
+	m := decode(t, out)
+	// First socks/http/mixed inbound is b.
+	if dig(m, "inbounds", 0, "tag") != "b" {
+		t.Fatalf("mixed tag = %v", dig(m, "inbounds", 0, "tag"))
+	}
+	root := parseObj(t, out)
+	rt, _ := root.Get("routing")
+	got, _ := rt.(*ojson.Object).Get("rules")
+	g := got.([]any)
+	want, _ := ojson.Parse([]byte(rules))
+	gb, _ := ojson.Marshal(g[len(g)-2:])
+	wb, _ := ojson.Marshal(want)
+	if !bytes.Equal(gb, wb) {
+		t.Fatalf("provider rules changed:\n%s\n%s", gb, wb)
+	}
+	if len(rep.Warnings) != 1 || !strings.Contains(rep.Warnings[0], "[a c]") || strings.Contains(rep.Warnings[0], "other") {
+		t.Fatalf("warnings = %v", rep.Warnings)
+	}
+	if marshalAny(t, rep.ReplacedInbounds) != `["a","b","c","http:4"]` {
+		t.Fatalf("replaced = %v", rep.ReplacedInbounds)
+	}
+
+	// No socks/http/mixed inbound: the first inbound's tag.
+	cfg = `{"inbounds":[{"tag":"x","protocol":"vmess","port":1},{"tag":"y","protocol":"vless","port":2}],
+	"outbounds":[{"tag":"proxy","protocol":"vless"}],"routing":{"rules":[]}}`
+	out, _ = mustBuild(t, baseInput(profile.Profile{Config: parseObj(t, []byte(cfg))}))
+	if dig(decode(t, out), "inbounds", 0, "tag") != "x" {
+		t.Fatal("fallback to first inbound tag")
+	}
+}
+
+func TestProxyTagNeverDirect(t *testing.T) {
+	cfg := `{"outbounds":[{"tag":"d","protocol":"freedom"},{"tag":"real","protocol":"vless"}],
+	"routing":{"rules":[{"type":"field","network":"tcp,udp","outboundTag":"d"}]}}`
+	mk := func(src profile.Source) profile.Profile {
+		return profile.Profile{Config: parseObj(t, []byte(cfg)), RoutingSource: src}
+	}
+	out, rep := mustBuild(t, baseInput(mk(profile.Source{Kind: profile.SourceProvider})))
+	if rep.ProxyTag != "real" || dig(ruleList(t, out)[1], "outboundTag") != "real" {
+		t.Fatalf("provider: proxy tag %q rule %v", rep.ProxyTag, ruleList(t, out)[1])
+	}
+	out, rep = mustBuild(t, baseInput(mk(profile.Source{Kind: profile.SourcePreset, Preset: profile.PresetAllProxy})))
+	rules := ruleList(t, out)
+	if rep.ProxyTag != "real" || dig(rules[len(rules)-1], "outboundTag") != "real" {
+		t.Fatalf("preset: proxy tag %q last rule %v", rep.ProxyTag, rules[len(rules)-1])
+	}
+	// Only internal outbounds: an error.
+	only := profile.Profile{Config: parseObj(t, []byte(`{"outbounds":[{"tag":"d","protocol":"freedom"}]}`))}
+	if _, _, err := Build(baseInput(only)); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("err = %v", err)
+	}
 }
 
 func TestDirectBlockAddedOnlyWhenMissing(t *testing.T) {

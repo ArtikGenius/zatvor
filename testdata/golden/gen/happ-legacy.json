@@ -1,7 +1,7 @@
 {
   "inbounds": [
     {
-      "tag": "mixed-in",
+      "tag": "mixed",
       "listen": "127.0.0.1",
       "port": 20001,
       "protocol": "mixed",
