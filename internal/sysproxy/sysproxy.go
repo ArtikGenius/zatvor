@@ -47,17 +47,24 @@ func Ours(mixedPort int) sysapi.ProxyState {
 	}
 }
 
-// ConflictError reports a foreign proxy or PAC in the LAN settings. Apply
-// changed nothing; the user decides whether to force.
+// ConflictError reports a foreign proxy or PAC on a connection: Conn is
+// "" for the LAN settings or the name of a RAS entry. Apply changed
+// nothing; the user decides whether to force.
 type ConflictError struct {
+	Conn    string
 	Current sysapi.ProxyState
 }
 
 func (e *ConflictError) Error() string {
+	what := "system proxy"
 	if e.Current.PACURL != "" {
-		return "sysproxy: a foreign PAC script is set"
+		what = "PAC script"
 	}
-	return "sysproxy: a foreign system proxy is set"
+	where := "the LAN settings"
+	if e.Conn != "" {
+		where = "a dial-up/VPN connection"
+	}
+	return "sysproxy: a foreign " + what + " is set on " + where
 }
 
 // Manager applies and reverts our system proxy through a journal.
@@ -93,10 +100,11 @@ func connOf(target string) (string, error) {
 }
 
 // Apply sets ours on the LAN settings and on every RAS entry. Before each
-// connection is set, its previous state is journaled (fsynced). When the
-// LAN settings hold a foreign proxy or PAC and force is false, Apply
-// returns *ConflictError and changes nothing. If Apply fails midway, the
-// connections already set are journaled; call Revert.
+// connection is set, its previous state is journaled (fsynced). When any
+// connection holds a foreign proxy or PAC and force is false, Apply
+// returns *ConflictError for the first one and changes nothing. Without
+// RAS (sysapi.ErrRASUnavailable) only the LAN is set. If Apply fails
+// midway, the connections already set are journaled; call Revert.
 func (m *Manager) Apply(ours sysapi.ProxyState, force bool) error {
 	if !ours.Enabled || ours.Server == "" || ours.PACURL != "" {
 		return errors.New("sysproxy: Apply needs an enabled proxy server and no PAC")
@@ -110,32 +118,33 @@ func (m *Manager) Apply(ours sysapi.ProxyState, force bool) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	lan, err := m.sp.Get()
-	if err != nil {
-		return fmt.Errorf("sysproxy: read LAN settings: %w", err)
+	names, err := m.sp.Connections()
+	if errors.Is(err, sysapi.ErrRASUnavailable) {
+		names, err = nil, nil
 	}
-	if !force {
-		foreign, err := m.foreign(lan, ours)
+	if err != nil {
+		return fmt.Errorf("sysproxy: list connections: %w", err)
+	}
+	names = append([]string{""}, names...)
+	prevs := make([]sysapi.ProxyState, len(names))
+	for i, name := range names {
+		if prevs[i], err = m.sp.GetConn(name); err != nil {
+			return fmt.Errorf("sysproxy: read %s: %w", targetOf(name), err)
+		}
+		if force {
+			continue
+		}
+		foreign, err := m.foreign(prevs[i], ours)
 		if err != nil {
 			return err
 		}
 		if foreign {
-			return &ConflictError{Current: lan}
+			return &ConflictError{Conn: name, Current: prevs[i]}
 		}
-	}
-	names, err := m.sp.Connections()
-	if err != nil {
-		return fmt.Errorf("sysproxy: list connections: %w", err)
 	}
 
-	for i, name := range append([]string{""}, names...) {
-		prev := lan
-		if i > 0 {
-			if prev, err = m.sp.GetConn(name); err != nil {
-				return fmt.Errorf("sysproxy: read %s: %w", targetOf(name), err)
-			}
-		}
-		pb, err := json.Marshal(prev)
+	for i, name := range names {
+		pb, err := json.Marshal(prevs[i])
 		if err != nil {
 			return err
 		}
@@ -153,7 +162,7 @@ func (m *Manager) Apply(ours sysapi.ProxyState, force bool) error {
 	return nil
 }
 
-// foreign reports whether the LAN state belongs to someone else: a PAC
+// foreign reports whether a connection's state belongs to someone else: a PAC
 // URL, or an enabled server that is neither ours nor a loopback server a
 // pending journal entry of ours applied (a port re-pick or a crash).
 // Auto-detection alone is the Windows default and not foreign.
@@ -251,7 +260,8 @@ func equal(a, b sysapi.ProxyState) (bool, error) {
 }
 
 // Reverter is the journal.Reverter for Kind. Targets are "lan" and
-// "ras:<entry name>".
+// "ras:<entry name>". A restore is exact at the ProxyState level; see
+// NewWindows for what the OS may store differently.
 func (m *Manager) Reverter() journal.Reverter { return reverter{sp: m.sp} }
 
 type reverter struct{ sp sysapi.SystemProxy }
@@ -266,6 +276,8 @@ func (r reverter) Current(target string) (json.RawMessage, error) {
 		return nil, err
 	}
 	if name != "" {
+		// An error (RAS unavailable included) fails the entry, which then
+		// stays pending with its Prev; it is never taken as "gone".
 		names, err := r.sp.Connections()
 		if err != nil {
 			return nil, err

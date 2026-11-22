@@ -20,6 +20,8 @@ type fakeSP struct {
 	states map[string]sysapi.ProxyState
 	sets   []string // connection names, in Set order
 	onSet  func(name string, s sysapi.ProxyState)
+
+	connErr error // returned by Connections when set
 }
 
 func newFake(lan sysapi.ProxyState, ras map[string]sysapi.ProxyState) *fakeSP {
@@ -37,6 +39,9 @@ func (f *fakeSP) Set(s sysapi.ProxyState) error   { return f.SetConn("", s) }
 func (f *fakeSP) Connections() ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.connErr != nil {
+		return nil, f.connErr
+	}
 	return slices.Clone(f.names), nil
 }
 func (f *fakeSP) state(name string) sysapi.ProxyState {
@@ -361,7 +366,7 @@ func TestRASEntriesCovered(t *testing.T) {
 	j := openJournal(t)
 	f := newFake(userLAN, map[string]sysapi.ProxyState{"Office VPN": vpn, "Dial-up": dial})
 	m := New(f, j)
-	if err := m.Apply(Ours(10808), false); err != nil {
+	if err := m.Apply(Ours(10808), true); err != nil { // the VPN PAC is foreign
 		t.Fatal(err)
 	}
 	var targets []string
@@ -475,4 +480,119 @@ func TestReverterTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustEqual(t, "Office VPN after Restore", f.state("Office VPN"), userLAN)
+}
+
+func TestRASConflict(t *testing.T) {
+	vpn := sysapi.ProxyState{PACURL: "http://vpn.example.test/p.pac"}
+	j := openJournal(t)
+	f := newFake(sysapi.ProxyState{AutoDetect: true}, map[string]sysapi.ProxyState{"Dial-up": {}, "Office VPN": vpn})
+	m := New(f, j)
+	err := m.Apply(Ours(10808), false)
+	var ce *ConflictError
+	if !errors.As(err, &ce) {
+		t.Fatalf("Apply = %v, want *ConflictError", err)
+	}
+	if ce.Conn != "Office VPN" {
+		t.Fatalf("ConflictError.Conn = %q, want %q", ce.Conn, "Office VPN")
+	}
+	mustEqual(t, "ConflictError.Current", ce.Current, vpn)
+	if len(f.sets) != 0 || len(pending(t, j)) != 0 {
+		t.Fatalf("RAS conflict still set %q / journaled %d", f.sets, len(pending(t, j)))
+	}
+	if err := m.Apply(Ours(10808), true); err != nil {
+		t.Fatalf("forced Apply = %v", err)
+	}
+	mustEqual(t, "Office VPN after forced Apply", f.state("Office VPN"), Ours(10808))
+	if err := m.Revert(); err != nil {
+		t.Fatal(err)
+	}
+	mustEqual(t, "Office VPN after Revert", f.state("Office VPN"), vpn)
+}
+
+func TestLANConflictNamesLAN(t *testing.T) {
+	f := newFake(sysapi.ProxyState{PACURL: "http://wpad.example.test/p.pac"}, map[string]sysapi.ProxyState{"Office VPN": {}})
+	var ce *ConflictError
+	if err := New(f, openJournal(t)).Apply(Ours(10808), false); !errors.As(err, &ce) || ce.Conn != "" {
+		t.Fatalf("Apply = %v, want *ConflictError with Conn \"\"", err)
+	}
+}
+
+func TestRASUnavailableApplyIsLANOnly(t *testing.T) {
+	j := openJournal(t)
+	f := newFake(userLAN, nil)
+	f.connErr = fmt.Errorf("load rasapi32.dll: %w", sysapi.ErrRASUnavailable)
+	m := New(f, j)
+	if err := m.Apply(Ours(10808), false); err != nil {
+		t.Fatalf("Apply without RAS = %v, want LAN-only apply", err)
+	}
+	if p := pending(t, j); len(p) != 1 || p[0].Target != "lan" {
+		t.Fatalf("pending = %+v, want only lan", p)
+	}
+	if err := m.Revert(); err != nil {
+		t.Fatal(err)
+	}
+	mustEqual(t, "LAN after Revert", f.state(""), userLAN)
+}
+
+func TestConnectionsErrorFailsApply(t *testing.T) {
+	f := newFake(userLAN, nil)
+	f.connErr = errors.New("RasEnumEntriesW: access denied")
+	if err := New(f, openJournal(t)).Apply(Ours(10808), false); err == nil {
+		t.Fatal("Apply = nil, want the Connections error")
+	}
+	if len(f.sets) != 0 {
+		t.Fatalf("Apply set %q despite the error", f.sets)
+	}
+}
+
+func TestRASUnavailableAtRevertKeepsEntries(t *testing.T) {
+	j := openJournal(t)
+	f := newFake(userLAN, map[string]sysapi.ProxyState{"Office VPN": {Server: "vpn.example.test:80"}})
+	if err := New(f, j).Apply(Ours(10808), false); err != nil {
+		t.Fatal(err)
+	}
+	f.connErr = fmt.Errorf("load rasapi32.dll: %w", sysapi.ErrRASUnavailable)
+	m := New(f, j)
+	if err := m.Revert(); err == nil {
+		t.Fatal("Revert = nil, want the RAS failure")
+	}
+	mustEqual(t, "LAN after Revert", f.state(""), userLAN)
+	p := pending(t, j)
+	if len(p) != 1 || p[0].Target != "ras:Office VPN" {
+		t.Fatalf("pending = %+v, want the ras entry kept", p)
+	}
+	// RAS is back: the next Revert restores the entry.
+	f.connErr = nil
+	if err := m.Revert(); err != nil {
+		t.Fatal(err)
+	}
+	mustEqual(t, "Office VPN after second Revert", f.state("Office VPN"), sysapi.ProxyState{Server: "vpn.example.test:80"})
+}
+
+func TestApplyFailsMidwayThenRevert(t *testing.T) {
+	j := openJournal(t)
+	base := newFake(userLAN, map[string]sysapi.ProxyState{"Office VPN": {Server: "vpn.example.test:80"}})
+	sp := &failingSP{fakeSP: base, fail: "Office VPN"}
+	m := New(sp, j)
+	if err := m.Apply(Ours(10808), false); err == nil {
+		t.Fatal("Apply = nil, want the RAS set failure")
+	}
+	mustEqual(t, "LAN after failed Apply", base.state(""), Ours(10808))
+	if err := m.Revert(); err != nil {
+		t.Fatalf("Revert = %v", err)
+	}
+	mustEqual(t, "LAN after Revert", base.state(""), userLAN)
+	mustEqual(t, "Office VPN after Revert", base.state("Office VPN"), sysapi.ProxyState{Server: "vpn.example.test:80"})
+	res := m.LastRevert()
+	if len(res) != 2 {
+		t.Fatalf("LastRevert = %+v, want 2 results", res)
+	}
+	for _, r := range res {
+		if r.Outcome != journal.Restored {
+			t.Fatalf("revert of %s = %s, want restored", r.Target, r.Outcome)
+		}
+	}
+	if p := pending(t, j); len(p) != 0 {
+		t.Fatalf("pending = %d, want 0", len(p))
+	}
 }

@@ -98,6 +98,24 @@ func readRegistry(t *testing.T) regValues {
 	return v
 }
 
+// checkFlags logs the LAN's FLAGS and FLAGS_UI and, where FLAGS_UI is
+// supported, asserts it equals want (want 0: log only).
+func checkFlags(t *testing.T, when string, want uint32) {
+	t.Helper()
+	flags, ui, uiErr, err := sysproxy.RawFlags("")
+	if err != nil {
+		t.Fatalf("%s: read FLAGS: %v", when, err)
+	}
+	if uiErr != nil {
+		t.Logf("%s: FLAGS=%#x, FLAGS_UI unsupported (%v)", when, flags, uiErr)
+		return
+	}
+	t.Logf("%s: FLAGS=%#x FLAGS_UI=%#x", when, flags, ui)
+	if want != 0 && ui != want {
+		t.Fatalf("%s: FLAGS_UI = %#x, want %#x", when, ui, want)
+	}
+}
+
 func assertRestored(t *testing.T, m *sysproxy.Manager) {
 	t.Helper()
 	res := m.LastRevert()
@@ -117,10 +135,12 @@ func TestLiveApplyRevert(t *testing.T) {
 	saved := saveRunner(t, sp)
 	m := newManager(t, sp)
 	ours := sysproxy.Ours(testPort)
+	checkFlags(t, "runner", 0)
 
 	if err := m.Apply(ours, true); err != nil {
 		t.Fatalf("Apply = %v", err)
 	}
+	checkFlags(t, "after Apply", sysproxy.FlagsOurs)
 	got, err := sp.Get()
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +160,7 @@ func TestLiveApplyRevert(t *testing.T) {
 		t.Fatalf("Revert = %v", err)
 	}
 	assertRestored(t, m)
+	checkFlags(t, "after Revert", 0)
 	if got, err := sp.Get(); err != nil || mustJSON(t, got) != mustJSON(t, saved) {
 		t.Fatalf("LAN after Revert = %+v, %v; want %s", got, err, mustJSON(t, saved))
 	}
@@ -161,6 +182,7 @@ func TestLiveRestoresForeignPAC(t *testing.T) {
 	if err := sp.Set(foreign); err != nil {
 		t.Fatalf("Set(foreign) = %v", err)
 	}
+	checkFlags(t, "after Set(foreign)", 0x1|0x4|0x8) // DIRECT|AUTO_PROXY_URL|AUTO_DETECT
 	if got, err := sp.Get(); err != nil || mustJSON(t, got) != mustJSON(t, foreign) {
 		t.Fatalf("Get after Set(foreign) = %+v, %v; want %s", got, err, mustJSON(t, foreign))
 	}
@@ -184,6 +206,7 @@ func TestLiveRestoresForeignPAC(t *testing.T) {
 		t.Fatalf("Revert = %v", err)
 	}
 	assertRestored(t, m)
+	checkFlags(t, "after Revert", 0x1|0x4|0x8)
 	if got, err := sp.Get(); err != nil || mustJSON(t, got) != mustJSON(t, foreign) {
 		t.Fatalf("LAN after Revert = %+v, %v; want byte-equal %s", got, err, mustJSON(t, foreign))
 	}

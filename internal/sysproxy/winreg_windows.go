@@ -38,6 +38,7 @@ const (
 	perConnProxyServer   = 2
 	perConnProxyBypass   = 3
 	perConnAutoconfigURL = 4
+	perConnFlagsUI       = 10 // IE8+: the flags as the settings UI shows them
 
 	proxyTypeDirect       = 0x1
 	proxyTypeProxy        = 0x2
@@ -80,6 +81,12 @@ func (o *perConnOption) str() **uint16 { return (**uint16)(unsafe.Pointer(&o.Val
 type windowsProxy struct{}
 
 // NewWindows returns the live system proxy of the current user.
+//
+// A restore is exact at the ProxyState level, not byte for byte in the
+// registry: PROXY_TYPE_DIRECT is always written, an empty server or bypass
+// list is written as an empty string (an absent ProxyServer/ProxyOverride
+// value may come back present and empty), and AUTO_PROXY_URL with an empty
+// URL is not kept (ProxyState has PAC in use only with a URL).
 func NewWindows() sysapi.SystemProxy { return windowsProxy{} }
 
 func (windowsProxy) Get() (sysapi.ProxyState, error) { return getConn("") }
@@ -107,37 +114,59 @@ func newList(pin *runtime.Pinner, name string, opts []perConnOption) (*perConnOp
 	return l, nil
 }
 
-func getConn(name string) (sysapi.ProxyState, error) {
+// query runs InternetQueryOptionW for opts on the connection and returns
+// the string values (GlobalFree'd); a DWORD value stays in opts.
+func query(name string, opts []perConnOption) ([]string, error) {
 	if err := procInternetQueryOptionW.Find(); err != nil {
-		return sysapi.ProxyState{}, err
+		return nil, err
 	}
 	var pin runtime.Pinner
 	defer pin.Unpin()
-	opts := []perConnOption{
-		{Option: perConnFlags},
-		{Option: perConnProxyServer},
-		{Option: perConnProxyBypass},
-		{Option: perConnAutoconfigURL},
-	}
 	l, err := newList(&pin, name, opts)
 	if err != nil {
-		return sysapi.ProxyState{}, err
+		return nil, err
 	}
 	size := l.Size
 	r, _, e := procInternetQueryOptionW.Call(0, internetOptionPerConnectionOption,
 		uintptr(unsafe.Pointer(l)), uintptr(unsafe.Pointer(&size)))
 	if r == 0 {
-		return sysapi.ProxyState{}, fmt.Errorf("InternetQueryOptionW: %w", e)
+		return nil, fmt.Errorf("InternetQueryOptionW: %w", e)
 	}
-	// WinINet allocated the strings with GlobalAlloc.
 	strs := make([]string, len(opts))
-	for i := 1; i < len(opts); i++ {
-		if p := *opts[i].str(); p != nil {
+	for i, o := range opts {
+		if o.Option == perConnFlags || o.Option == perConnFlagsUI {
+			continue
+		}
+		if p := *opts[i].str(); p != nil { // allocated by WinINet with GlobalAlloc
 			strs[i] = windows.UTF16PtrToString(p)
 			procGlobalFree.Call(uintptr(unsafe.Pointer(p)))
 		}
 	}
-	flags := uint32(opts[0].Value)
+	return strs, nil
+}
+
+// getConn reads the flags as the settings UI shows them (FLAGS_UI): after a
+// failed WPAD detection the plain FLAGS drop PROXY_TYPE_AUTO_DETECT while
+// the user's checkbox is still on, and journaling that would switch it off
+// on revert. FLAGS is the fallback where FLAGS_UI is not supported.
+func getConn(name string) (sysapi.ProxyState, error) {
+	opts := func(flags uint32) []perConnOption {
+		return []perConnOption{
+			{Option: flags},
+			{Option: perConnProxyServer},
+			{Option: perConnProxyBypass},
+			{Option: perConnAutoconfigURL},
+		}
+	}
+	o := opts(perConnFlagsUI)
+	strs, err := query(name, o)
+	if err != nil {
+		o = opts(perConnFlags)
+		if strs, err = query(name, o); err != nil {
+			return sysapi.ProxyState{}, err
+		}
+	}
+	flags := uint32(o[0].Value)
 	s := sysapi.ProxyState{
 		Enabled:    flags&proxyTypeProxy != 0,
 		Server:     strs[1],
@@ -150,9 +179,20 @@ func getConn(name string) (sysapi.ProxyState, error) {
 	return s, nil
 }
 
+// queryFlags reads one flags option (FLAGS or FLAGS_UI) of the connection.
+func queryFlags(name string, opt uint32) (uint32, error) {
+	o := []perConnOption{{Option: opt}}
+	if _, err := query(name, o); err != nil {
+		return 0, err
+	}
+	return uint32(o[0].Value), nil
+}
+
 // setConn writes the flags, server and bypass, and the PAC URL when one is
 // in use. Without one the stored URL is left as it is, only disabled, so a
-// restore never loses a URL the user had switched off.
+// restore never loses a URL the user had switched off. The flags go to both
+// FLAGS and FLAGS_UI, so that the FLAGS_UI read in getConn sees what we
+// wrote; where WinINet rejects FLAGS_UI, the set is retried with FLAGS only.
 func setConn(name string, s sysapi.ProxyState) error {
 	if err := procInternetSetOptionW.Find(); err != nil {
 		return err
@@ -186,6 +226,7 @@ func setConn(name string, s sysapi.ProxyState) error {
 		return err
 	}
 	opts := []perConnOption{
+		{Option: perConnFlagsUI, Value: uint64(flags)},
 		{Option: perConnFlags, Value: uint64(flags)},
 		{Option: perConnProxyServer, Value: server},
 		{Option: perConnProxyBypass, Value: bypass},
@@ -197,18 +238,27 @@ func setConn(name string, s sysapi.ProxyState) error {
 		}
 		opts = append(opts, perConnOption{Option: perConnAutoconfigURL, Value: pac})
 	}
-	l, err := newList(&pin, name, opts)
+	if err := setOptions(&pin, name, opts); err != nil {
+		if err = setOptions(&pin, name, opts[1:]); err != nil { // without FLAGS_UI
+			return err
+		}
+	}
+	for _, opt := range []uintptr{internetOptionSettingsChanged, internetOptionRefresh} {
+		if r, _, e := procInternetSetOptionW.Call(0, opt, 0, 0); r == 0 {
+			return fmt.Errorf("InternetSetOptionW(%d): %w", opt, e)
+		}
+	}
+	return nil
+}
+
+func setOptions(pin *runtime.Pinner, name string, opts []perConnOption) error {
+	l, err := newList(pin, name, opts)
 	if err != nil {
 		return err
 	}
 	if r, _, e := procInternetSetOptionW.Call(0, internetOptionPerConnectionOption,
 		uintptr(unsafe.Pointer(l)), uintptr(l.Size)); r == 0 {
 		return fmt.Errorf("InternetSetOptionW: %w", e)
-	}
-	for _, opt := range []uintptr{internetOptionSettingsChanged, internetOptionRefresh} {
-		if r, _, e := procInternetSetOptionW.Call(0, opt, 0, 0); r == 0 {
-			return fmt.Errorf("InternetSetOptionW(%d): %w", opt, e)
-		}
 	}
 	return nil
 }
@@ -226,7 +276,7 @@ func splitBypass(v string) []string {
 // duplicates, in the order RAS reports them.
 func rasEntries() ([]string, error) {
 	if err := procRasEnumEntriesW.Find(); err != nil {
-		return nil, nil // no RAS on this system, so no RAS entries
+		return nil, fmt.Errorf("RasEnumEntriesW: %w (%w)", sysapi.ErrRASUnavailable, err)
 	}
 	buf := make([]rasEntryName, 1)
 	for range 4 {
