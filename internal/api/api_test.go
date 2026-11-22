@@ -794,6 +794,53 @@ func TestSSEStalledReaderIsDropped(t *testing.T) {
 	}
 }
 
+func TestSSEIdleStreamSurvivesKeepAlives(t *testing.T) {
+	// Keep-alives and a late event come long after the write timeout: the
+	// deadline must count from each write, not from the last wake-up.
+	defer api.SetSSEWriteTimeout(200 * time.Millisecond)()
+	defer api.SetSSEKeepAlive(500 * time.Millisecond)()
+	f := newFake()
+	e := startServer(t, f)
+	r, _ := http.NewRequest("GET", "http://"+e.addr+"/v1/events", nil)
+	r.Header.Set("Authorization", "Bearer "+e.token)
+	resp, err := client.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	sc := bufio.NewScanner(resp.Body)
+	line := func() string {
+		t.Helper()
+		if !sc.Scan() {
+			t.Fatalf("stream ended: %v", sc.Err())
+		}
+		return sc.Text()
+	}
+	if l := line(); l != "event: state" {
+		t.Fatalf("first line %q", l)
+	}
+	keepAlives := 0
+	for keepAlives < 2 {
+		if line() == ": keep-alive" {
+			keepAlives++
+		}
+	}
+	time.Sleep(700 * time.Millisecond) // an event well after the last write
+	f.emit(api.WarningEvent(engine.Error{Code: "late", Message: "late"}))
+	for {
+		l := line()
+		if l == "event: warning" {
+			break
+		}
+		if l != "" && l != ": keep-alive" {
+			t.Fatalf("unexpected line %q", l)
+		}
+	}
+	if l := line(); l != `data: {"code":"late","message":"late"}` {
+		t.Errorf("late event data %q", l)
+	}
+}
+
 // syncBuffer is a bytes.Buffer safe for the server's goroutines.
 type syncBuffer struct {
 	mu sync.Mutex

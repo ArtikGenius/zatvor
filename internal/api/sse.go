@@ -73,7 +73,7 @@ func writeEvent(w io.Writer, e Event) error {
 
 // keepAlive is the interval of the comment lines that keep idle streams
 // open through clients with read timeouts.
-const keepAlive = 25 * time.Second
+var keepAlive = 25 * time.Second
 
 // events streams Server-Sent Events: the current state first, then every
 // event of the backend until the client leaves or the server stops.
@@ -85,8 +85,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
-	// Every write gets a deadline, so a client that stops reading ends its
-	// stream instead of holding this handler forever.
+	// Every write gets its own deadline, set right before it (never before a
+	// wait), so a client that stops reading ends its stream instead of
+	// holding this handler forever, while an idle stream stays open.
 	deadline := func() { _ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)) }
 	deadline()
 	w.WriteHeader(http.StatusOK)
@@ -97,7 +98,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer tick.Stop()
 	for {
 		var err error
-		deadline()
 		select {
 		case <-ctx.Done():
 			return
@@ -105,8 +105,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			deadline()
 			err = writeEvent(w, ev)
 		case <-tick.C:
+			deadline()
 			_, err = io.WriteString(w, ": keep-alive\n\n")
 		}
 		if err != nil || rc.Flush() != nil {
