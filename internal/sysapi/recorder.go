@@ -9,7 +9,9 @@ import (
 )
 
 // Recorder implements every sysapi interface without touching the system.
-// Each call appends one JSON line {"ts","op","args"} to the writer.
+// Each call that would change the system appends one JSON line
+// {"ts","op","args"} to the writer; reads are answered from memory and not
+// recorded, so a poll (the engine's drift check) does not grow the log.
 type Recorder struct {
 	mu    sync.Mutex
 	w     io.Writer
@@ -45,9 +47,6 @@ func copyState(s ProxyState) ProxyState {
 func (r *Recorder) Get() (ProxyState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.record("proxy.get", struct{}{}); err != nil {
-		return ProxyState{}, err
-	}
 	return copyState(r.proxy), nil
 }
 
@@ -63,11 +62,7 @@ func (r *Recorder) Set(s ProxyState) error {
 }
 
 // Connections reports no RAS entries: the Recorder has none of its own.
-func (r *Recorder) Connections() ([]string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return nil, r.record("proxy.connections", struct{}{})
-}
+func (r *Recorder) Connections() ([]string, error) { return nil, nil }
 
 type connArgs struct {
 	Conn  string      `json:"conn"`
@@ -82,9 +77,6 @@ func (r *Recorder) GetConn(name string) (ProxyState, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.record("proxy.get_conn", connArgs{Conn: name}); err != nil {
-		return ProxyState{}, err
-	}
 	return copyState(r.conns[name]), nil
 }
 

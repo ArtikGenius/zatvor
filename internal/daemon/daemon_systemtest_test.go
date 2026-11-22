@@ -155,7 +155,6 @@ func runHelperSupervisor(ctx context.Context, opts Options, lockName string, clo
 		fmt.Fprintln(os.Stderr, "helper supervisor:", err)
 		return 1
 	}
-	defer rv.Close()
 	child := func() *exec.Cmd {
 		cmd := exec.Command(os.Args[0], helperChildArg, os.Args[2])
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

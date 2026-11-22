@@ -23,10 +23,10 @@ func TestRecorderWritesAndChangesNothing(t *testing.T) {
 		t.Fatalf("Get = %+v, want %+v", got, want)
 	}
 	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("log has %d lines, want 2:\n%s", len(lines), buf.String())
+	if len(lines) != 1 {
+		t.Fatalf("log has %d lines, want 1 (reads are not recorded):\n%s", len(lines), buf.String())
 	}
-	for i, op := range []string{"proxy.set", "proxy.get"} {
+	for i, op := range []string{"proxy.set"} {
 		var e struct {
 			TS   string          `json:"ts"`
 			Op   string          `json:"op"`
@@ -66,7 +66,7 @@ func TestRecorderGetZeroAndProcessOps(t *testing.T) {
 		}
 	}
 	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
-	wantOps := []string{"proxy.get", "proc.suspend", "proc.resume", "proc.terminate"}
+	wantOps := []string{"proc.suspend", "proc.resume", "proc.terminate"}
 	if len(lines) != len(wantOps) {
 		t.Fatalf("got %d lines:\n%s", len(lines), buf.String())
 	}
@@ -75,8 +75,8 @@ func TestRecorderGetZeroAndProcessOps(t *testing.T) {
 			t.Fatalf("line %d = %s, want op %s", i, lines[i], op)
 		}
 	}
-	if !strings.Contains(lines[1], `"pid":4242`) {
-		t.Fatalf("suspend args missing pid: %s", lines[1])
+	if !strings.Contains(lines[0], `"pid":4242`) {
+		t.Fatalf("suspend args missing pid: %s", lines[0])
 	}
 }
 
@@ -106,7 +106,7 @@ func TestRecorderPerConnection(t *testing.T) {
 	if got, err := r.GetConn("Other"); err != nil || got.Enabled || got.PACURL != "" {
 		t.Fatalf("GetConn(unset) = %+v, %v; want zero", got, err)
 	}
-	wantOps := []string{"proxy.connections", "proxy.set", "proxy.set_conn", "proxy.get", "proxy.get_conn", "proxy.get_conn"}
+	wantOps := []string{"proxy.set", "proxy.set_conn"}
 	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
 	if len(lines) != len(wantOps) {
 		t.Fatalf("got %d lines, want %d:\n%s", len(lines), len(wantOps), buf.String())
@@ -116,7 +116,7 @@ func TestRecorderPerConnection(t *testing.T) {
 			t.Fatalf("line %d = %s, want op %s", i, lines[i], op)
 		}
 	}
-	if !strings.Contains(lines[2], `"conn":"Office VPN"`) || !strings.Contains(lines[2], `"auto_detect":true`) {
-		t.Fatalf("set_conn args = %s, want conn and state", lines[2])
+	if !strings.Contains(lines[1], `"conn":"Office VPN"`) || !strings.Contains(lines[1], `"auto_detect":true`) {
+		t.Fatalf("set_conn args = %s, want conn and state", lines[1])
 	}
 }

@@ -32,7 +32,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ArtikGenius/zatvor/internal/api"
@@ -43,6 +42,7 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/hwid"
 	"github.com/ArtikGenius/zatvor/internal/instance"
 	"github.com/ArtikGenius/zatvor/internal/journal"
+	"github.com/ArtikGenius/zatvor/internal/rotlog"
 	"github.com/ArtikGenius/zatvor/internal/safemode"
 	"github.com/ArtikGenius/zatvor/internal/settings"
 	"github.com/ArtikGenius/zatvor/internal/store"
@@ -213,7 +213,6 @@ func (d *daemon) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer sys.close()
 	d.logReverts("start", sys.journal.RevertAll(sys.reverters()))
 
 	settingsPath := filepath.Join(o.Dirs.Data, SettingsFile)
@@ -437,7 +436,6 @@ type system struct {
 	journal *journal.Journal
 	proxy   *sysproxy.Manager
 	dev     *devtools.Manager
-	close   func() error
 }
 
 // openSystem opens the journal of the mode (R16: Journal/safe or
@@ -449,9 +447,8 @@ func openSystem(o Options) (*system, error) {
 		return nil, err
 	}
 	var (
-		sp    sysapi.SystemProxy
-		fsys  devtools.FS
-		close = func() error { return nil }
+		sp   sysapi.SystemProxy
+		fsys devtools.FS
 	)
 	if o.Mode == safemode.Live {
 		p, err := liveSystemProxy()
@@ -460,22 +457,21 @@ func openSystem(o Options) (*system, error) {
 		}
 		sp, fsys = p, devtools.OSFS()
 	} else {
-		f, err := os.OpenFile(filepath.Join(o.Dirs.Logs, SafeModeLog), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-		if err != nil {
+		// It rotates like zatvord.log (R44); the supervisor writes it too.
+		w := rotlog.New(filepath.Join(o.Dirs.Logs, SafeModeLog), rotlog.Max)
+		if _, err := w.Write(nil); err != nil {
 			return nil, fmt.Errorf("daemon: open the safe-mode log: %w", err)
 		}
-		w := &lockedWriter{w: f}
-		sp, fsys, close = sysapi.NewRecorder(w), devtools.NewRecorder(w), f.Close
+		sp, fsys = sysapi.NewRecorder(w), devtools.NewRecorder(w)
 	}
 	if o.hooks != nil && o.hooks.sysProxy != nil {
 		sp = o.hooks.sysProxy
 	}
 	j, err := journal.Open(filepath.Join(o.Dirs.Journal, o.Mode.String()))
 	if err != nil {
-		close()
 		return nil, fmt.Errorf("daemon: open the journal: %w", err)
 	}
-	return &system{journal: j, proxy: sysproxy.New(sp, j), dev: devtools.New(devToolRoots(o), j, fsys), close: close}, nil
+	return &system{journal: j, proxy: sysproxy.New(sp, j), dev: devtools.New(devToolRoots(o), j, fsys)}, nil
 }
 
 func (s *system) reverters() map[string]journal.Reverter {
@@ -491,8 +487,6 @@ type RevertSet struct {
 	// Cleanup runs after the revert: it empties the dev-tool state file,
 	// so no shell or wrapper routes to the dead daemon's port (R23).
 	Cleanup func() error
-	// Close releases the safe-mode log.
-	Close func() error
 }
 
 // Reverters opens the journal of opts.Mode and returns it with the
@@ -505,7 +499,7 @@ func Reverters(opts Options) (*RevertSet, error) {
 	}
 	stateFile := filepath.Join(opts.Dirs.Run, StateFileName)
 	return &RevertSet{
-		Journal: sys.journal, Reverters: sys.reverters(), Close: sys.close,
+		Journal: sys.journal, Reverters: sys.reverters(),
 		Cleanup: func() error { return writeState(stateFile, "") },
 	}, nil
 }
@@ -559,18 +553,6 @@ func credTarget(dirs appdir.Dirs) string {
 func shortHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
-}
-
-// lockedWriter serializes the two recorders that share the safe-mode log.
-type lockedWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func (l *lockedWriter) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.w.Write(p)
 }
 
 // writeAtomic replaces path with data: a temp file in the same directory,

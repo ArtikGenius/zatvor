@@ -26,6 +26,7 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/appdir"
 	"github.com/ArtikGenius/zatvor/internal/daemon"
 	"github.com/ArtikGenius/zatvor/internal/instance"
+	"github.com/ArtikGenius/zatvor/internal/rotlog"
 	"github.com/ArtikGenius/zatvor/internal/safemode"
 	"github.com/ArtikGenius/zatvor/internal/supervisor"
 )
@@ -86,7 +87,7 @@ func run(args []string, env func(string) string, stdin io.Reader, stdout, stderr
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
 		return 1
 	}
-	logw := teeLog{newRotatingLog(filepath.Join(dirs.Logs, daemon.LogFile), logMax), stderr}
+	logw := teeLog{rotlog.New(filepath.Join(dirs.Logs, daemon.LogFile), rotlog.Max), stderr}
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
@@ -182,7 +183,6 @@ func runSupervisor(ctx context.Context, opts daemon.Options, exe string, stdout,
 		}
 		return 0
 	}
-	defer rv.Close()
 	args := childArgs(opts.Dirs, modeArg(opts.Mode))
 	child := func() *exec.Cmd {
 		cmd := exec.Command(exe, args...)

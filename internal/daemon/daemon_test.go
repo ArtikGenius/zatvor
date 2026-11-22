@@ -33,6 +33,7 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/journal"
 	"github.com/ArtikGenius/zatvor/internal/link"
 	"github.com/ArtikGenius/zatvor/internal/profile"
+	"github.com/ArtikGenius/zatvor/internal/rotlog"
 	"github.com/ArtikGenius/zatvor/internal/safemode"
 	"github.com/ArtikGenius/zatvor/internal/settings"
 	"github.com/ArtikGenius/zatvor/internal/subfetch"
@@ -1081,7 +1082,6 @@ func TestRevertSetCleanupEmptiesStateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rv.Close()
 	if rv.Journal == nil || rv.Reverters[sysproxy.Kind] == nil {
 		t.Fatalf("revert set = %+v", rv)
 	}
@@ -1174,5 +1174,30 @@ func TestDiscoveryRewriteKeepsInflightConnect(t *testing.T) {
 	}
 	if st, body := run.call("GET", "/v1/status", nil); st != 200 || !strings.Contains(string(body), `"phase":"connected"`) {
 		t.Fatalf("status = %d %s", st, body)
+	}
+}
+
+// Item 5: safe-mode.jsonl rotates like zatvord.log (R44), keeping one .1.
+func TestSafeModeLogRotates(t *testing.T) {
+	r := newRig(t)
+	id := r.seed()
+	path := filepath.Join(r.dirs.Logs, SafeModeLog)
+	old := bytes.Repeat([]byte("{}\n"), rotlog.Max/3+1) // just over the limit
+	if err := os.WriteFile(path, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := r.start()
+	run.connect(id)
+	if err := run.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path + ".1"); err != nil || !bytes.Equal(b, old) {
+		t.Fatalf("safe-mode.jsonl.1 = %d bytes, %v; want the old %d", len(b), err, len(old))
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 || fi.Size() >= rotlog.Max {
+		t.Fatalf("safe-mode.jsonl after the rotation: %v, %v", fi, err)
+	}
+	if len(recorded(t, r.dirs)) == 0 {
+		t.Fatal("nothing recorded after the rotation")
 	}
 }
