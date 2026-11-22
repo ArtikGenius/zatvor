@@ -1,15 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"path"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/ArtikGenius/zatvor/internal/devtools"
@@ -55,6 +55,7 @@ var codeStatus = map[string]int{
 	// subsvc.CodeNotFound is "not_found" as well.
 	engine.CodeProxyConflict:    http.StatusConflict,
 	engine.CodeNoConflict:       http.StatusConflict,
+	engine.CodeNotConnected:     http.StatusConflict,
 	engine.CodeSuperseded:       http.StatusConflict,
 	devtools.CodeConflict:       http.StatusConflict,
 	devtools.CodeChangedByOther: http.StatusConflict,
@@ -182,8 +183,7 @@ func allowed(r *http.Request, host string, want []byte) bool {
 	return len(auth) == 1 && subtle.ConstantTimeCompare([]byte(auth[0]), want) == 1
 }
 
-// routes registers every /v1 endpoint. New endpoints (GET /v1/diag with the
-// diagnostics bundle) are registered here.
+// routes registers every /v1 endpoint.
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/status", s.status)
 	mux.HandleFunc("GET /v1/events", s.events)
@@ -198,6 +198,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/devtools", s.devtools)
 	mux.HandleFunc("POST /v1/proxy/resolve-conflict", s.resolveConflict)
 	mux.HandleFunc("POST /v1/show", s.show)
+	mux.HandleFunc("POST /v1/check", s.check)
+	mux.HandleFunc("GET /v1/diag", s.diag)
 }
 
 var okJSON = struct {
@@ -363,6 +365,35 @@ func (s *Server) show(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, okJSON)
 }
 
+// check answers with the engine.CheckResult of a fresh tunnel check.
+func (s *Server) check(w http.ResponseWriter, r *http.Request) {
+	res, err := s.b.Check(opContext(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// diag answers with the diagnostics zip, the one response that is not
+// JSON. The zip is built in memory first, so a failure at any point is
+// still a JSON error and never a cut-off zip.
+func (s *Server) diag(w http.ResponseWriter, r *http.Request) {
+	var buf bytes.Buffer
+	if err := s.b.Diag(r.Context(), &buf); err != nil {
+		writeError(w, err)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/zip")
+	h.Set("Content-Disposition", `attachment; filename="zatvor-diag.zip"`)
+	h.Set("Content-Length", strconv.Itoa(buf.Len()))
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
+}
+
 // ProfileInfo is a profile as the API lists it: no server address, no
 // credentials, no link.
 type ProfileInfo struct {
@@ -409,7 +440,7 @@ type SubscriptionInfo struct {
 
 func subscriptionInfo(s profile.Subscription) SubscriptionInfo {
 	si := SubscriptionInfo{
-		ID: s.ID, Host: hostOnly(s.URL), Title: s.Title, UA: s.UA, SendDevice: s.SendDevice,
+		ID: s.ID, Host: profile.URLHost(s.URL), Title: s.Title, UA: s.UA, SendDevice: s.SendDevice,
 		Upload: s.Info.Upload, Download: s.Info.Download, Total: s.Info.Total,
 		UpdateInterval: int64(s.Info.UpdateInterval / time.Second), Announce: s.Info.Announce,
 		HWIDNotSupported: s.Info.HWIDNotSupported, HWIDLimitReached: s.Info.HWIDLimitReached,
@@ -424,24 +455,6 @@ func subscriptionInfo(s profile.Subscription) SubscriptionInfo {
 		si.LastGood = &t
 	}
 	return si
-}
-
-// hostOnly reduces a subscription URL (or a URL already reduced to its host)
-// to the host and port: no user info, path, query or fragment.
-func hostOnly(raw string) string {
-	if u, err := url.Parse(raw); err == nil && u.Host != "" {
-		return u.Host
-	}
-	if i := strings.Index(raw, "://"); i >= 0 {
-		raw = raw[i+3:]
-	}
-	if i := strings.IndexAny(raw, "/?#"); i >= 0 {
-		raw = raw[:i]
-	}
-	if i := strings.LastIndex(raw, "@"); i >= 0 {
-		raw = raw[i+1:]
-	}
-	return raw
 }
 
 // diffJSON is profile.Diff with lower-case keys and no null lists.

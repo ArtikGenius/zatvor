@@ -396,3 +396,29 @@ func TestPlainRestoreChangedByOtherIsSkipped(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+func TestBytesIsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	j, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := j.Bytes(); err != nil || len(b) != 0 {
+		t.Fatalf("empty journal: %q, %v", b, err)
+	}
+	id, err := j.Begin(Entry{Kind: "k", Target: "t", Prev: json.RawMessage(`1`), Applied: json.RawMessage(`2`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Done(id); err != nil {
+		t.Fatal(err)
+	}
+	b, err := j.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk, _ := os.ReadFile(filepath.Join(dir, fileName))
+	if !bytes.Equal(b, disk) || !bytes.Contains(b, []byte(`"done":"`+id+`"`)) {
+		t.Errorf("Bytes = %s, file = %s", b, disk)
+	}
+}

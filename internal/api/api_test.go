@@ -54,6 +54,9 @@ type fakeBackend struct {
 	shows     int
 	panicMsg  string // Status panics with it when set
 	listeners map[chan api.Event]struct{}
+	checkRes  engine.CheckResult
+	checks    int
+	diagBody  []byte // what Diag writes, also before it fails with err
 }
 
 func newFake() *fakeBackend {
@@ -196,6 +199,25 @@ func (f *fakeBackend) SetDevTools(on bool) ([]devtools.Target, error) {
 }
 
 func (f *fakeBackend) Show() { f.mu.Lock(); f.shows++; f.mu.Unlock() }
+
+func (f *fakeBackend) Check(context.Context) (engine.CheckResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks++
+	if f.err != nil {
+		return engine.CheckResult{}, f.err
+	}
+	return f.checkRes, nil
+}
+
+func (f *fakeBackend) Diag(_ context.Context, w io.Writer) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, err := w.Write(f.diagBody); err != nil {
+		return err
+	}
+	return f.err
+}
 
 func (f *fakeBackend) setErr(err error) { f.mu.Lock(); f.err = err; f.mu.Unlock() }
 
@@ -870,5 +892,74 @@ func TestPanicValueNotLogged(t *testing.T) {
 	e.srv.Stop()
 	if out := buf.String(); strings.Contains(out, subTok) || strings.Contains(out, "panic") {
 		t.Errorf("server logged %q", out)
+	}
+}
+
+func TestCheckRoute(t *testing.T) {
+	f := newFake()
+	f.checkRes = engine.CheckResult{Status: engine.OK, IPv4: "203.0.113.9", At: time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC), Gen: 3}
+	e := startServer(t, f)
+	code, body := e.req("POST", "/v1/check", "", nil)
+	if want := `{"status":"ok","ipv4":"203.0.113.9","at":"2026-11-22T10:00:00Z","gen":3}`; code != 200 || strings.TrimSpace(body) != want {
+		t.Errorf("check: %d %s, want 200 %s", code, body, want)
+	}
+	f.setErr(&engine.Error{Code: engine.CodeNotConnected, Message: "not connected"})
+	code, body = e.req("POST", "/v1/check", "", nil)
+	if want := `{"code":"not_connected","message":"not connected"}`; code != 409 || strings.TrimSpace(body) != want {
+		t.Errorf("not connected: %d %s, want 409 %s", code, body, want)
+	}
+	if code, body := e.req("GET", "/v1/check", "", nil); code != 404 {
+		t.Errorf("GET /v1/check: %d %s", code, body)
+	}
+	code, body = e.req("POST", "/v1/check", "", func(r *http.Request) { r.Header.Del("Authorization") })
+	wantForbidden(t, "check without token", code, body)
+	if f.checks != 2 {
+		t.Errorf("backend saw %d checks, want 2", f.checks)
+	}
+}
+
+// diagReq is GET /v1/diag; it returns the status, Content-Type and body.
+func (e *env) diagReq(mod func(*http.Request)) (int, string, []byte) {
+	e.t.Helper()
+	r, err := http.NewRequest("GET", "http://"+e.addr+"/v1/diag", nil)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	r.Header.Set("Authorization", "Bearer "+e.token)
+	if mod != nil {
+		mod(r)
+	}
+	resp, err := client.Do(r)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header.Get("Content-Type"), b
+}
+
+func TestDiagRoute(t *testing.T) {
+	f := newFake()
+	f.diagBody = []byte("PK\x03\x04 pretend zip")
+	e := startServer(t, f)
+	code, ct, body := e.diagReq(nil)
+	if code != 200 || ct != "application/zip" || string(body) != string(f.diagBody) {
+		t.Errorf("diag: %d %q %q", code, ct, body)
+	}
+	// An error after the first bytes still gives a JSON error, never part
+	// of a zip.
+	f.setErr(fmt.Errorf("read %s: %w", subURL, errors.New("disk on fire")))
+	code, ct, body = e.diagReq(nil)
+	if want := `{"code":"internal","message":"internal error"}`; code != 500 || !strings.HasPrefix(ct, "application/json") || strings.TrimSpace(string(body)) != want {
+		t.Errorf("failing diag: %d %q %s, want 500 %s", code, ct, body, want)
+	}
+	f.setErr(nil)
+	for name, mod := range map[string]func(*http.Request){
+		"no token":       func(r *http.Request) { r.Header.Del("Authorization") },
+		"wrong Host":     func(r *http.Request) { r.Host = "localhost" },
+		"foreign Origin": func(r *http.Request) { r.Header.Set("Origin", "http://evil.example") },
+	} {
+		code, _, body := e.diagReq(mod)
+		wantForbidden(t, "diag "+name, code, string(body))
 	}
 }

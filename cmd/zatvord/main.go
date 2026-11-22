@@ -33,9 +33,6 @@ import (
 
 const version = "0.0.0-dev"
 
-// logFile in the Logs dir receives the log of the supervisor and the child.
-const logFile = "zatvord.log"
-
 func main() { os.Exit(run(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr)) }
 
 func run(args []string, env func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -74,7 +71,7 @@ func run(args []string, env func(string) string, stdin io.Reader, stdout, stderr
 
 	base := *dataDir
 	if base != "" {
-		if err := daemon.ValidateDataDir(base, userHome(env)); err != nil {
+		if err := appdir.ValidateDataDir(base, appdir.Home(env)); err != nil {
 			fmt.Fprintf(stderr, "zatvord: --data-dir: %v\n", err)
 			return 2
 		}
@@ -90,7 +87,7 @@ func run(args []string, env func(string) string, stdin io.Reader, stdout, stderr
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
 		return 1
 	}
-	logw := teeLog{newRotatingLog(filepath.Join(dirs.Logs, logFile), logMax), stderr}
+	logw := teeLog{newRotatingLog(filepath.Join(dirs.Logs, daemon.LogFile), logMax), stderr}
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(stderr, "zatvord: %v\n", err)
@@ -129,13 +126,6 @@ func modeArg(m safemode.Mode) string {
 
 func childArgs(dirs appdir.Dirs, mode string) []string {
 	return []string{"--supervised", "--data-dir", dirs.Data, mode}
-}
-
-func userHome(env func(string) string) string {
-	if runtime.GOOS == "windows" {
-		return env("USERPROFILE")
-	}
-	return env("HOME")
 }
 
 // openSupervisorJournal opens the journal of opts.Mode (R16) and its

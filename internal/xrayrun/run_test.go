@@ -460,3 +460,34 @@ func TestFailedStartKeepsNewerStart(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestOutputIsScrubbedAndKeptAfterStop(t *testing.T) {
+	clk := newFakeClock()
+	r, _ := newRunner(t, "crash", clk)
+	if out := r.Output(); out != "" {
+		t.Fatalf("Output before Start = %q", out)
+	}
+	if err := r.Start(context.Background(), []byte(`{"password":"SECRET_OUT_REPLACE"}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	next(t, r, Exited)
+	rs := next(t, r, Restarting)
+	clk.Advance(rs.Delay)
+	next(t, r, Exited) // the restart crashed too: its output is appended
+	if err := r.Stop(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	out := r.Output()
+	if strings.Count(out, "boom") != 2 || strings.Contains(out, "SECRET_OUT_REPLACE") || !strings.Contains(out, "***") {
+		t.Errorf("Output = %q, want both crashes, scrubbed", out)
+	}
+	// A new Start begins a new output.
+	r2, _ := newRunner(t, "sleep", nil)
+	if err := r2.Start(context.Background(), []byte("{}"), nil); err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Stop(time.Second)
+	if out := r2.Output(); strings.Contains(out, "boom") {
+		t.Errorf("fresh runner Output = %q", out)
+	}
+}

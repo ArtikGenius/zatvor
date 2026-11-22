@@ -3,6 +3,7 @@ package appdir
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -52,5 +53,69 @@ func TestDefaultFor(t *testing.T) {
 		if (err != nil) != tc.wantErr || got != tc.want {
 			t.Errorf("%s: got %q, %v; want %q (err %v)", tc.name, got, err, tc.want, tc.wantErr)
 		}
+	}
+}
+
+func TestValidateDataDir(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	full := filepath.Join(base, "full")
+	ours := filepath.Join(base, "ours")
+	withSettings := filepath.Join(base, "settings")
+	for _, d := range []string{home, full, withSettings, filepath.Join(ours, "journal"), filepath.Join(ours, "run")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(full, "thesis.docx"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(withSettings, SettingsFile), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.VolumeName(base) + string(filepath.Separator)
+	for _, c := range []struct {
+		path string
+		ok   bool
+	}{
+		{"relative/dir", false},
+		{root, false},
+		{home, false},
+		{full, false},
+		{ours, true},
+		{withSettings, true},
+		{filepath.Join(base, "new"), true},
+		{filepath.Join(home, "zatvor"), true},
+	} {
+		err := ValidateDataDir(c.path, home)
+		if (err == nil) != c.ok {
+			t.Errorf("ValidateDataDir(%q) = %v, want ok=%v", c.path, err, c.ok)
+		}
+	}
+}
+
+func TestLayoutCreatesNothing(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "Zatvor")
+	d := Layout(base)
+	if d.Data != base || d.Run != filepath.Join(base, "run") || d.Logs != filepath.Join(base, "logs") || d.Journal != filepath.Join(base, "journal") {
+		t.Errorf("Layout = %+v", d)
+	}
+	if _, err := os.Stat(base); !os.IsNotExist(err) {
+		t.Errorf("Layout created %s (%v)", base, err)
+	}
+	r, err := Resolve(base)
+	if err != nil || r != d {
+		t.Errorf("Resolve = %+v, %v; want Layout's %+v", r, err, d)
+	}
+}
+
+func TestHome(t *testing.T) {
+	env := map[string]string{"HOME": "/home/u", "USERPROFILE": `C:\Users\u`}
+	want := env["HOME"]
+	if runtime.GOOS == "windows" {
+		want = env["USERPROFILE"]
+	}
+	if got := Home(func(k string) string { return env[k] }); got != want {
+		t.Errorf("Home = %q, want %q", got, want)
 	}
 }

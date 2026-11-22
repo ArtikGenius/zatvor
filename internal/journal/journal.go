@@ -94,6 +94,18 @@ type Journal struct {
 	syncDir  func(string) error
 }
 
+// Bytes returns the journal file as it is (JSON lines; empty when there is
+// no file yet), read under the journal's lock so no write is half in it.
+func (j *Journal) Bytes() ([]byte, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	b, err := os.ReadFile(j.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
+}
+
 // Open creates dir (0700) if needed and drops a torn final line, if any.
 func Open(dir string) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {

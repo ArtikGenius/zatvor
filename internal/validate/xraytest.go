@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -83,37 +84,73 @@ func minimalEnv(assetDir string) []string {
 // scrub replaces every secret value found in cfg, and its variants Xray may
 // print, with ***. A cfg that is not valid JSON yields msg unchanged.
 func scrub(msg string, cfg []byte) string {
+	return ScrubAll(msg, SecretValues(cfg))
+}
+
+// SecretValues returns the secret string values of the JSON document doc:
+// every string leaf at least 6 bytes long that is not under a key known to
+// be plain (protocol, tag, network, security, ...). It returns nil when doc
+// is not valid JSON.
+func SecretValues(doc []byte) []string {
 	var v any
-	if json.Unmarshal(cfg, &v) != nil {
-		return msg
+	if json.Unmarshal(doc, &v) != nil {
+		return nil
 	}
 	leaves := map[string]bool{}
 	collectSecrets(v, false, leaves)
-	set := map[string]bool{}
+	out := make([]string, 0, len(leaves))
 	for s := range leaves {
-		for _, c := range variants(s) {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ScrubAll replaces every variant (SecretVariants) of every secret in msg
+// with ***, longest first, so a secret that contains another is replaced
+// whole. Secrets shorter than 6 bytes are ignored: they would match
+// ordinary words.
+func ScrubAll(msg string, secrets []string) string {
+	set := map[string]bool{}
+	for _, s := range secrets {
+		if len(s) < minSecretLen {
+			continue
+		}
+		for _, c := range SecretVariants(s) {
 			if c != "" {
 				set[c] = true
 			}
 		}
 	}
+	if len(set) == 0 {
+		return msg
+	}
 	vals := make([]string, 0, len(set))
 	for s := range set {
 		vals = append(vals, s)
 	}
-	// Longest first so a secret containing another is replaced whole.
-	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
+	sort.Slice(vals, func(i, j int) bool {
+		if len(vals[i]) != len(vals[j]) {
+			return len(vals[i]) > len(vals[j])
+		}
+		return vals[i] < vals[j]
+	})
+	pairs := make([]string, 0, 2*len(vals))
 	for _, s := range vals {
-		msg = strings.ReplaceAll(msg, s, "***")
+		pairs = append(pairs, s, "***")
 	}
-	return msg
+	// A Replacer tries the pairs in argument order at each position, so
+	// the longest match wins.
+	return strings.NewReplacer(pairs...).Replace(msg)
 }
 
 var uuidRe = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
 
-// variants lists the forms of a secret that may show up in Xray output: as is,
-// lower/upper case, dash-stripped for UUIDs, and JSON/Go-escaped.
-func variants(s string) []string {
+// SecretVariants lists the forms of a secret that may show up in output:
+// as is, lower/upper case, dash-stripped for UUIDs, and of each of these
+// the JSON-escaped, Go-quoted, URL query-escaped and URL path-escaped
+// forms.
+func SecretVariants(s string) []string {
 	base := []string{s, strings.ToLower(s), strings.ToUpper(s)}
 	if uuidRe.MatchString(s) {
 		d := strings.ReplaceAll(s, "-", "")
@@ -125,7 +162,7 @@ func variants(s string) []string {
 			out = append(out, string(j[1:len(j)-1]))
 		}
 		q := strconv.Quote(b)
-		out = append(out, q[1:len(q)-1])
+		out = append(out, q[1:len(q)-1], url.QueryEscape(b), url.PathEscape(b))
 	}
 	return out
 }

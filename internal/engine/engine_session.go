@@ -289,7 +289,7 @@ func (e *Engine) switchGeo(s *session, fetchErr error) (retry, again bool) {
 	_ = s.runner.Stop(stopTimeout)
 	e.bumpGen()
 	var cause error
-	r := e.d.NewRunner(dir)
+	r := e.newRunner(dir)
 	if err := r.Start(s.ctx, cfg, e.d.Ready(s.in.Ports)); err != nil {
 		cause = err
 	} else if res := e.check(s.ctx, s.in); res.Status != OK {
@@ -306,7 +306,7 @@ func (e *Engine) switchGeo(s *session, fetchErr error) (retry, again bool) {
 	}
 
 	// Roll back to the bootstrap config on its own set.
-	r = e.d.NewRunner(oldDir)
+	r = e.newRunner(oldDir)
 	if err := r.Start(s.ctx, oldCfg, e.d.Ready(s.in.Ports)); err != nil {
 		s.events = nil // no runner left to watch; the stopped one stays for teardown
 		return e.lostXrayLocked(s, newError(CodeXrayStartFailed, "Xray did not start again after a failed geo switch", err, oldCfg)), false

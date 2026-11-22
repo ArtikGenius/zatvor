@@ -46,17 +46,21 @@ users.
   (1c adds the UI's own origin); `Authorization: Bearer <token>` matches in constant time. A CORS
   preflight from a page therefore fails, and no CORS headers are ever sent.
 - **Bodies** are capped at 64 KiB (413 `body_too_large`), must be one JSON value, and every response
-  is JSON with `Cache-Control: no-store` and `nosniff`.
+  is JSON with `Cache-Control: no-store` and `nosniff`. The one exception is the zip of `GET diag`
+  (`application/zip`), which is built in memory first, so a failure is still a JSON error.
 - **Errors** are `{"code","message"}`. A domain error (`engine`, `subsvc`, `devtools`, `api.Error`,
   also when wrapped) gives its own code and message; the text of a wrapped error, which can hold a URL
   or a path, never reaches a body. Anything else is `{"code":"internal","message":"internal error"}`.
   Status: 400 bad input (`bad_request`, `invalid_url`, `settings_empty`), 403 `forbidden`, 404
   `not_found`, 409 conflicts (`proxy_conflict`, `no_conflict`, `superseded`, `devtools_conflict`,
-  `devtools_changed_by_other`), 413, 500 `internal`, and 422 for every other domain failure.
+  `devtools_changed_by_other`, `not_connected`), 413, 500 `internal`, and 422 for every other domain
+  failure.
 - **Routes v1:** `GET status`, `GET events`, `GET profiles`, `POST connect {profile}`,
   `POST disconnect`, `GET subscriptions`, `POST subscriptions {url, ua}`,
   `POST subscriptions/{id}/update`, `DELETE subscriptions/{id}`, `PUT settings`, `POST devtools {on}`,
-  `POST proxy/resolve-conflict {force}`, `POST show`; `GET diag` comes with the diagnostics bundle.
+  `POST proxy/resolve-conflict {force}`, `POST show`, `POST check` (a fresh tunnel check through
+  the connected tunnel; the check result, or 409 `not_connected`), and `GET diag` (the redacted
+  diagnostics zip).
   Listings carry no secrets: a subscription shows its URL's host only and a profile no address,
   credential or link.
 - **Events.** `GET /v1/events` is SSE with the events `state`, `subscription` and `warning`; the

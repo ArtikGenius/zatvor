@@ -1365,3 +1365,134 @@ func TestInterruptedWorkStaysCancelledWhileConnectWaits(t *testing.T) {
 		t.Fatalf("state = %+v", st)
 	}
 }
+
+func TestRecheckNotConnected(t *testing.T) {
+	g := newRig(t, nil)
+	if _, err := g.e.Recheck(context.Background()); err == nil || errCode(t, err) != engine.CodeNotConnected {
+		t.Fatalf("Recheck while disconnected = %v, want not_connected", err)
+	}
+	crash(t, g)
+	checks := g.w.count("check")
+	if _, err := g.e.Recheck(context.Background()); err == nil || errCode(t, err) != engine.CodeNotConnected {
+		t.Fatalf("Recheck while degraded = %v, want not_connected", err)
+	}
+	if n := g.w.count("check"); n != checks {
+		t.Errorf("Recheck ran %d checks while not connected", n-checks)
+	}
+}
+
+func TestRecheckStoresResult(t *testing.T) {
+	g := newRig(t, nil)
+	if err := g.e.Connect(context.Background(), linkProfile(t)); err != nil {
+		t.Fatal(err)
+	}
+	for len(g.e.Events()) > 0 {
+		<-g.e.Events()
+	}
+	g.clk.Advance(time.Minute)
+	g.w.mu.Lock()
+	g.w.checks = []engine.CheckResult{{Status: engine.Bad}, {Status: engine.OK, IPv4: "203.0.113.10"}}
+	g.w.mu.Unlock()
+
+	res, err := g.e.Recheck(context.Background())
+	if err != nil || res.Status != engine.Bad || !res.At.Equal(g.clk.Now()) {
+		t.Fatalf("Recheck = %+v, %v; want bad at %v", res, err, g.clk.Now())
+	}
+	st := g.e.State()
+	if st.Phase != engine.Connected || st.Check != res {
+		t.Fatalf("state = %+v, want connected with check %+v", st, res)
+	}
+	select {
+	case ev := <-g.e.Events():
+		if ev.Check != res {
+			t.Errorf("event check = %+v, want %+v", ev.Check, res)
+		}
+	default:
+		t.Error("Recheck published no event")
+	}
+	if res, err := g.e.Recheck(context.Background()); err != nil || res.Status != engine.OK || res.IPv4 != "203.0.113.10" {
+		t.Fatalf("second Recheck = %+v, %v", res, err)
+	}
+	if n := g.w.count("apply"); n != 1 {
+		t.Errorf("Recheck touched the system proxy: %d applies", n)
+	}
+}
+
+// A Connect or Disconnect that arrives while Recheck runs interrupts it,
+// and gets the engine right after.
+func TestRecheckYieldsToOperations(t *testing.T) {
+	for _, op := range []string{"connect", "disconnect"} {
+		t.Run(op, func(t *testing.T) {
+			g := newRig(t, nil)
+			if err := g.e.Connect(context.Background(), linkProfile(t)); err != nil {
+				t.Fatal(err)
+			}
+			inCheck := make(chan struct{})
+			g.w.mu.Lock()
+			g.w.onCheck = func(ctx context.Context) {
+				g.w.mu.Lock()
+				g.w.onCheck = nil
+				g.w.mu.Unlock()
+				close(inCheck)
+				<-ctx.Done()
+			}
+			g.w.mu.Unlock()
+			type result struct {
+				res engine.CheckResult
+				err error
+			}
+			done := make(chan result, 1)
+			go func() {
+				res, err := g.e.Recheck(context.Background())
+				done <- result{res, err}
+			}()
+			<-inCheck
+			var err error
+			want := engine.Connected
+			if op == "connect" {
+				err = g.e.Connect(context.Background(), linkProfile(t))
+			} else {
+				err, want = g.e.Disconnect(context.Background()), engine.Disconnected
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", op, err)
+			}
+			r := <-done
+			if r.err == nil || errCode(t, r.err) != engine.CodeCanceled {
+				t.Fatalf("Recheck = %+v, %v; want canceled", r.res, r.err)
+			}
+			if st := g.e.State(); st.Phase != want {
+				t.Fatalf("state = %+v, want %s", st, want)
+			}
+		})
+	}
+}
+
+type outRunner struct {
+	engine.Runner
+	out string
+}
+
+func (r outRunner) Output() string { return r.out }
+
+func TestXrayOutputOfLastRun(t *testing.T) {
+	g := newRig(t, func(d *engine.Deps) {
+		prev := d.NewRunner
+		d.NewRunner = func(dir string) engine.Runner { return outRunner{prev(dir), "xray said " + dir} }
+	})
+	if out := g.e.XrayOutput(); out != "" {
+		t.Fatalf("XrayOutput before any run = %q", out)
+	}
+	if err := g.e.Connect(context.Background(), linkProfile(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.e.Disconnect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if out := g.e.XrayOutput(); out != "xray said set1" {
+		t.Errorf("XrayOutput after the run = %q", out)
+	}
+	if out := newRig(t, nil).e.XrayOutput(); out != "" {
+		t.Errorf("XrayOutput of a runner without output = %q", out)
+	}
+}

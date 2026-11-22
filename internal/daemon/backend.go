@@ -6,7 +6,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	mrand "math/rand"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -14,8 +17,10 @@ import (
 
 	"github.com/ArtikGenius/zatvor/internal/api"
 	"github.com/ArtikGenius/zatvor/internal/devtools"
+	"github.com/ArtikGenius/zatvor/internal/diag"
 	"github.com/ArtikGenius/zatvor/internal/engine"
 	"github.com/ArtikGenius/zatvor/internal/gen"
+	"github.com/ArtikGenius/zatvor/internal/journal"
 	"github.com/ArtikGenius/zatvor/internal/ports"
 	"github.com/ArtikGenius/zatvor/internal/profile"
 	"github.com/ArtikGenius/zatvor/internal/settings"
@@ -45,11 +50,15 @@ type backend struct {
 	stateFile    string
 	eng          *engine.Engine
 	svc          *subsvc.Service
+	store        *guardedStore // read by Diag only: the redaction needs the full URLs
 	dev          *devtools.Manager
 	fan          *fanout
 	onShow       func()
 	clock        xrayrun.Clock
 	putState     func(path, v string) error // writeState; tests inject failures
+	version      string                     // zatvord's version, for the diagnostics
+	journal      *journal.Journal           // the mode's journal, for the diagnostics
+	logPath      string                     // the daemon log, for the diagnostics
 
 	setMu sync.Mutex // guards st and the settings file
 	st    settings.Settings
@@ -69,7 +78,7 @@ type backend struct {
 	stopOps context.CancelFunc
 }
 
-func newBackend(d *daemon, settingsPath string, st settings.Settings, stateFile string, dev *devtools.Manager) *backend {
+func newBackend(d *daemon, settingsPath string, st settings.Settings, stateFile string, sys *system) *backend {
 	var seed [8]byte
 	_, _ = rand.Read(seed[:])
 	ops, stop := context.WithCancel(context.Background())
@@ -79,7 +88,8 @@ func newBackend(d *daemon, settingsPath string, st settings.Settings, stateFile 
 	}
 	return &backend{
 		clock: d.opts.Clock, putState: put,
-		logf: d.logf, settingsPath: settingsPath, stateFile: stateFile, dev: dev,
+		logf: d.logf, settingsPath: settingsPath, stateFile: stateFile, dev: sys.dev,
+		version: d.opts.Version, journal: sys.journal, logPath: filepath.Join(d.opts.Dirs.Logs, LogFile),
 		fan: newFanout(), onShow: d.opts.hooks.onShow, st: st,
 		rnd: mrand.New(mrand.NewSource(int64(binary.LittleEndian.Uint64(seed[:])))),
 		ops: ops, stopOps: stop,
@@ -405,6 +415,64 @@ func (b *backend) Show() {
 	if b.onShow != nil {
 		b.onShow()
 	}
+}
+
+// Check runs a fresh tunnel check through the connected tunnel.
+func (b *backend) Check(ctx context.Context) (engine.CheckResult, error) {
+	ctx, done, err := b.enter(ctx)
+	defer done()
+	if err != nil {
+		return engine.CheckResult{}, err
+	}
+	return b.eng.Recheck(ctx)
+}
+
+// Diag writes the diagnostics zip: versions, settings, the mode's journal,
+// the end of the daemon log, the last Xray output, the state and the
+// subscription hosts, with every secret value of the stored subscriptions
+// redacted (diag.Bundle).
+func (b *backend) Diag(ctx context.Context, w io.Writer) error {
+	_, done, err := b.enter(ctx)
+	defer done()
+	if err != nil {
+		return err
+	}
+	jb, err := b.journal.Bytes()
+	if err != nil {
+		b.logf("diag: cannot read the journal")
+	}
+	// svc.List reduces URLs to their host; the redaction needs them whole.
+	// An unreadable store holds no secret this process knows, so the
+	// bundle is still made, without subscriptions.
+	subs, err := b.store.Load()
+	if err != nil {
+		b.logf("diag: cannot read the profile store (%s)", storeCode(err))
+	}
+	return diag.Bundle(w, diag.Sources{
+		Versions:      diag.CurrentVersions(b.version),
+		Settings:      b.settings(),
+		Journal:       jb,
+		DaemonLog:     readLog(b.logPath),
+		XrayOutput:    b.eng.XrayOutput(),
+		State:         b.eng.State(),
+		Subscriptions: subs,
+		Now:           b.clock.Now(),
+	})
+}
+
+// readLog is the daemon log with its rotated part (R44) before it; a
+// missing part is left out.
+func readLog(path string) []byte {
+	var out []byte
+	for _, p := range []string{path + ".1", path} {
+		if b, err := os.ReadFile(p); err == nil {
+			out = append(out, b...)
+			if len(b) > 0 && b[len(b)-1] != '\n' {
+				out = append(out, '\n')
+			}
+		}
+	}
+	return out
 }
 
 // updateOnStart sends one direct (or tunnel, when up) request per

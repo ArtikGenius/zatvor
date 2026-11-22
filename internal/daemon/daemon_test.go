@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/ArtikGenius/zatvor/internal/api"
 	"github.com/ArtikGenius/zatvor/internal/appdir"
+	"github.com/ArtikGenius/zatvor/internal/diag"
 	"github.com/ArtikGenius/zatvor/internal/engine"
 	"github.com/ArtikGenius/zatvor/internal/gen"
 	"github.com/ArtikGenius/zatvor/internal/geo/assets"
@@ -36,6 +38,7 @@ import (
 	"github.com/ArtikGenius/zatvor/internal/subfetch"
 	"github.com/ArtikGenius/zatvor/internal/sysapi"
 	"github.com/ArtikGenius/zatvor/internal/sysproxy"
+	"github.com/ArtikGenius/zatvor/internal/xraybin"
 	"github.com/ArtikGenius/zatvor/internal/xrayrun"
 )
 
@@ -670,39 +673,6 @@ func TestFanoutNeverBlocks(t *testing.T) {
 	}
 }
 
-func TestValidateDataDir(t *testing.T) {
-	base := t.TempDir()
-	home := filepath.Join(base, "home")
-	full := filepath.Join(base, "full")
-	ours := filepath.Join(base, "ours")
-	for _, d := range []string{home, full, filepath.Join(ours, "journal"), filepath.Join(ours, "run")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(full, "thesis.docx"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	root := filepath.VolumeName(base) + string(filepath.Separator)
-	for _, c := range []struct {
-		path string
-		ok   bool
-	}{
-		{"relative/dir", false},
-		{root, false},
-		{home, false},
-		{full, false},
-		{ours, true},
-		{filepath.Join(base, "new"), true},
-		{filepath.Join(home, "zatvor"), true},
-	} {
-		err := ValidateDataDir(c.path, home)
-		if (err == nil) != c.ok {
-			t.Errorf("ValidateDataDir(%q) = %v, want ok=%v", c.path, err, c.ok)
-		}
-	}
-}
-
 // manualClock fires After only when Advance passes its deadline.
 type manualClock struct {
 	mu      sync.Mutex
@@ -880,6 +850,96 @@ func TestOpsRefusedWhileShuttingDown(t *testing.T) {
 	check("UpdateSubscription", err)
 	_, err = b.SetDevTools(true)
 	check("SetDevTools", err)
+	_, err = b.Check(context.Background())
+	check("Check", err)
+	check("Diag", b.Diag(context.Background(), io.Discard))
+}
+
+func TestCheckThroughAPI(t *testing.T) {
+	r := newRig(t)
+	id := r.seed()
+	run := r.start()
+	if st, body := run.call("POST", "/v1/check", nil); st != 409 || !bytes.Contains(body, []byte(`"code":"not_connected"`)) {
+		t.Fatalf("check while disconnected: %d %s", st, body)
+	}
+	run.connect(id)
+	st, body := run.call("POST", "/v1/check", nil)
+	var res engine.CheckResult
+	if err := json.Unmarshal(body, &res); st != 200 || err != nil || res.Status != engine.OK || res.IPv4 != "203.0.113.9" {
+		t.Fatalf("check while connected: %d %s", st, body)
+	}
+}
+
+func TestDiagThroughAPI(t *testing.T) {
+	r := newRig(t)
+	id := r.seed()
+	n, err := link.Parse(testLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const subURL = "https://sub.example.com/s/abc" // as seed stores it
+	logs := map[string]string{
+		LogFile + ".1": "old line\n",
+		LogFile:        "new line " + subURL + " " + n.Params["id"] + " " + n.Params["pbk"] + "\n",
+	}
+	for name, body := range logs {
+		if err := os.WriteFile(filepath.Join(r.dirs.Logs, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := r.start()
+	run.connect(id)
+	tok, err := api.ReadToken(r.dirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disc, err := os.ReadFile(filepath.Join(r.dirs.Run, api.DiscoveryFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st, body := run.call("GET", "/v1/diag", nil)
+	if st != 200 {
+		t.Fatalf("diag: %d %s", st, body)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	var names []string
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		names = append(names, f.Name)
+		files[f.Name] = string(b)
+	}
+	if fmt.Sprint(names) != fmt.Sprint(diag.Files) {
+		t.Fatalf("bundle holds %q, want %q", names, diag.Files)
+	}
+	for name, body := range files {
+		for _, s := range []string{subURL, "/s/abc", n.Params["id"], n.Params["pbk"], n.Address, tok, string(disc), id} {
+			if strings.Contains(body, s) {
+				t.Errorf("%s holds %q", name, s)
+			}
+		}
+	}
+	for name, want := range map[string]string{
+		"zatvord.log": "old line\nnew line ***", "versions.json": `"zatvord": "0.0.0-test"`,
+		"state.json": `"phase": "connected"`, "subscriptions.json": `"host": "sub.example.com"`,
+		"journal.jsonl": `"kind":"sysproxy"`, "settings.json": `"activeProfile": "***"`,
+	} {
+		if !strings.Contains(files[name], want) {
+			t.Errorf("%s lacks %q:\n%s", name, want, files[name])
+		}
+	}
+	if !strings.Contains(files["versions.json"], xraybin.PinnedVersion) {
+		t.Errorf("versions.json lacks the Xray pin: %s", files["versions.json"])
+	}
 }
 
 func TestStateFileWriteRetried(t *testing.T) {

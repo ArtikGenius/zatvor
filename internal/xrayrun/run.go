@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -120,8 +121,12 @@ type Runner struct {
 	stopping bool
 	gen      uint64 // bumped by each Start; Stop clears only its own
 	cur      *os.Process
-	stopCh   chan struct{}
-	done     chan struct{} // closed when the supervisor loop has ended
+	// output collects every child's output since the last Start; outCfg
+	// is that Start's config, to scrub it with.
+	output *ringBuf
+	outCfg []byte
+	stopCh chan struct{}
+	done   chan struct{} // closed when the supervisor loop has ended
 
 	// afterStopWait is a test hook run by Stop after the child has ended,
 	// before Stop clears the state.
@@ -155,6 +160,19 @@ func (r *Runner) emit(ev Event) {
 	}
 }
 
+// Output is the last 64 KiB of what Xray printed since the last Start,
+// across its restarts, with every secret value of that Start's config
+// replaced by ***. It stays readable after Stop; "" before any Start.
+func (r *Runner) Output() string {
+	r.mu.Lock()
+	out, cfg := r.output, r.outCfg
+	r.mu.Unlock()
+	if out == nil {
+		return ""
+	}
+	return validate.Scrub(out.String(), cfg)
+}
+
 // Pid is the process id of the running child, or 0.
 func (r *Runner) Pid() int {
 	r.mu.Lock()
@@ -166,24 +184,25 @@ func (r *Runner) Pid() int {
 }
 
 // Start launches Xray with cfg on stdin (never on disk). cfg is kept in
-// memory for restarts only. With a ready check, Start returns once it
-// passes; if it fails, or Xray exits first, the child is stopped and the
-// error is returned. ctx bounds the readiness wait only; the child lives
-// until Stop.
+// memory only, for restarts and to scrub Output. With a ready check, Start
+// returns once it passes; if it fails, or Xray exits first, the child is
+// stopped and the error is returned. ctx bounds the readiness wait only;
+// the child lives until Stop.
 func (r *Runner) Start(ctx context.Context, cfg []byte, ready ReadyCheck) error {
 	r.mu.Lock()
 	if r.running {
 		r.mu.Unlock()
 		return ErrAlreadyStarted
 	}
+	cfg = append([]byte(nil), cfg...)
 	r.gen++
 	gen := r.gen
 	r.running, r.stopping = true, false
 	r.stopCh, r.done = make(chan struct{}), make(chan struct{})
+	r.output, r.outCfg = newRingBuf(outputCap), cfg
 	r.mu.Unlock()
 	firstCrash := make(chan error, 1) // this Start's first crash only
 
-	cfg = append([]byte(nil), cfg...)
 	w, err := r.spawn(cfg)
 	if err != nil {
 		r.mu.Lock()
@@ -238,7 +257,8 @@ func (r *Runner) spawn(cfg []byte) (*waiter, error) {
 	}
 	cmd.Stdin = bytes.NewReader(cfg)
 	out := newRingBuf(outputCap)
-	cmd.Stdout, cmd.Stderr = out, out
+	all := io.MultiWriter(out, r.output) // one writer: exec serializes its Writes
+	cmd.Stdout, cmd.Stderr = all, all
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrSpawn, validate.Scrub(err.Error(), cfg))

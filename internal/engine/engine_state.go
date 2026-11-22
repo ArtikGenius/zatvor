@@ -49,6 +49,7 @@ const (
 	CodeXrayExited        = "xray_exited"
 	CodeXrayGaveUp        = "xray_gave_up"
 	CodeNoConflict        = "no_conflict"
+	CodeNotConnected      = "not_connected" // Recheck needs phase Connected
 )
 
 // Warning codes (State.Warnings).

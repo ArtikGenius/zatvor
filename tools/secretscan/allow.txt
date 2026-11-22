@@ -56,3 +56,6 @@ F6058E54-2338-4E4C-9D13-B2C91CD888AE
 AbCdEf01-2345-6789-abcd-ef0123456789
 # tools/secretscan/staged_test.go: throwaway id used to exercise the staged scan.
 12345678-1234-1234-1234-123456789abc
+
+# Made-up VLESS user id in the diagnostics redaction test (internal/diag); never used anywhere.
+00000000-0000-4000-8000-0000000c0de1

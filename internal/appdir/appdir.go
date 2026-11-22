@@ -24,14 +24,7 @@ func Resolve(base string) (Dirs, error) {
 	if base == "" {
 		return Dirs{}, errors.New("appdir: empty base directory")
 	}
-	d := Dirs{
-		Data:    base,
-		Cache:   filepath.Join(base, "cache"),
-		Logs:    filepath.Join(base, "logs"),
-		Journal: filepath.Join(base, "journal"),
-		Geo:     filepath.Join(base, "geo"),
-		Run:     filepath.Join(base, "run"),
-	}
+	d := Layout(base)
 	for _, p := range []string{d.Data, d.Cache, d.Logs, d.Journal, d.Geo, d.Run} {
 		if err := os.MkdirAll(p, 0o700); err != nil {
 			return Dirs{}, fmt.Errorf("appdir: %w", err)
@@ -41,6 +34,19 @@ func Resolve(base string) (Dirs, error) {
 		}
 	}
 	return d, nil
+}
+
+// Layout returns the directories under base without creating or changing
+// anything, for clients such as zatvor that only read the daemon's files.
+func Layout(base string) Dirs {
+	return Dirs{
+		Data:    base,
+		Cache:   filepath.Join(base, "cache"),
+		Logs:    filepath.Join(base, "logs"),
+		Journal: filepath.Join(base, "journal"),
+		Geo:     filepath.Join(base, "geo"),
+		Run:     filepath.Join(base, "run"),
+	}
 }
 
 // Default returns the per-user base directory for this OS: %LOCALAPPDATA%\Zatvor

@@ -2,8 +2,10 @@ package validate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,5 +121,49 @@ func TestScrubKeepsNonSecret(t *testing.T) {
 		if !strings.Contains(got, s) {
 			t.Errorf("%q was scrubbed: %s", s, got)
 		}
+	}
+}
+
+func TestSecretVariantsCoverURLForms(t *testing.T) {
+	s := `tok en/+&=?"\#%😀_REPLACE`
+	got := map[string]bool{}
+	for _, v := range SecretVariants(s) {
+		got[v] = true
+	}
+	j, _ := json.Marshal(s)
+	for _, want := range []string{s, url.QueryEscape(s), url.PathEscape(s), string(j[1 : len(j)-1]), strings.ToUpper(s)} {
+		if !got[want] {
+			t.Errorf("SecretVariants misses %q", want)
+		}
+	}
+}
+
+func TestScrubAll(t *testing.T) {
+	pw := `pw"\#%😀_REPLACE_ME`
+	j, _ := json.Marshal(pw)
+	msg := "a " + pw + " b " + url.QueryEscape(pw) + " c " + string(j) + " d short ok"
+	got := ScrubAll(msg, []string{pw, "short", ""})
+	for _, leak := range []string{pw, url.QueryEscape(pw), string(j[1 : len(j)-1])} {
+		if strings.Contains(got, leak) {
+			t.Errorf("%q leaked: %s", leak, got)
+		}
+	}
+	// Values shorter than the secret minimum are left alone.
+	if !strings.Contains(got, "short ok") || !strings.HasPrefix(got, "a *** b *** c ") {
+		t.Errorf("message mangled: %s", got)
+	}
+}
+
+func TestSecretValuesSkipsPlainKeys(t *testing.T) {
+	vals := SecretValues([]byte(`{"type":"reality-x","security":"reality","id":"SECRET_ID_REPLACE","nested":[{"pass":"PASS_REPLACE"}]}`))
+	got := map[string]bool{}
+	for _, v := range vals {
+		got[v] = true
+	}
+	if !got["SECRET_ID_REPLACE"] || !got["PASS_REPLACE"] || got["reality"] || got["reality-x"] {
+		t.Errorf("SecretValues = %q", vals)
+	}
+	if SecretValues([]byte("{")) != nil {
+		t.Error("invalid JSON gave values")
 	}
 }

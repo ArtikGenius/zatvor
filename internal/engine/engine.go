@@ -175,6 +175,7 @@ type Engine struct {
 	// pendingConnects counts connects registered but not yet holding
 	// opMu; while it is non-zero an interrupted work ctx stays cancelled.
 	pendingConnects int
+	lastRunner      Runner // the runner made last, for XrayOutput
 
 	// beforeOpLock is a test hook run by connect between registering
 	// (number seq) and taking opMu.
@@ -256,6 +257,29 @@ func (e *Engine) ProbeDialer() (subfetch.Dialer, bool) {
 		return nil, false
 	}
 	return socksDialer(s.in.Ports.Probe, s.in.ProbeUser, s.in.ProbePass), true
+}
+
+// newRunner makes the runner of one Xray run and remembers it for
+// XrayOutput.
+func (e *Engine) newRunner(dir string) Runner {
+	r := e.d.NewRunner(dir)
+	e.mu.Lock()
+	e.lastRunner = r
+	e.mu.Unlock()
+	return r
+}
+
+// XrayOutput is the output of the last Xray run (also after it ended)
+// with the secrets of its config replaced by ***, when its runner keeps
+// one (*xrayrun.Runner does); else "".
+func (e *Engine) XrayOutput() string {
+	e.mu.Lock()
+	r := e.lastRunner
+	e.mu.Unlock()
+	if o, ok := r.(interface{ Output() string }); ok {
+		return o.Output()
+	}
+	return ""
 }
 
 func (e *Engine) setSess(s *session) {
@@ -462,7 +486,7 @@ func (e *Engine) establish(ctx context.Context, p profile.Profile, force bool) (
 	if perr != nil {
 		return nil, perr
 	}
-	r := e.d.NewRunner(dir)
+	r := e.newRunner(dir)
 	if err := r.Start(ctx, cfg, e.d.Ready(pp)); err != nil {
 		return nil, newError(CodeXrayStartFailed, "Xray did not start", err, cfg)
 	}
@@ -619,4 +643,37 @@ func (e *Engine) ResolveConflict(ctx context.Context, force bool) error {
 		return e.connect(ctx, *p, true)
 	}
 	return e.Disconnect(ctx)
+}
+
+// Recheck runs a fresh tunnel check through the probe inbound of the
+// current connection, stores it in State.Check (with the usual state
+// event) and returns it. Only the check changes: the phase stays and the
+// system proxy is not touched. It fails with not_connected unless the
+// phase is Connected. It is serialized with the other operations like the
+// session loop's own re-check: a Connect or Disconnect that arrives while
+// it runs interrupts it, and it then fails with canceled.
+func (e *Engine) Recheck(ctx context.Context) (CheckResult, error) {
+	notConnected := &Error{Code: CodeNotConnected, Message: "not connected"}
+	e.mu.Lock()
+	s := e.sess
+	e.mu.Unlock()
+	if s == nil || !e.lock(s) {
+		return CheckResult{}, notConnected
+	}
+	defer e.opMu.Unlock()
+	e.mu.Lock()
+	up := s.xrayUp && e.st.Phase == Connected
+	e.mu.Unlock()
+	if !up {
+		return CheckResult{}, notConnected
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(s.work, cancel)()
+	res := e.check(cctx, s.in)
+	if cctx.Err() != nil {
+		return CheckResult{}, &Error{Code: CodeCanceled, Message: "tunnel check canceled"}
+	}
+	e.update(func(st *State) { st.Check = res })
+	return res, nil
 }

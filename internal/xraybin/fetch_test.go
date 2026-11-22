@@ -204,3 +204,17 @@ func TestRepoPinPath(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPinnedVersionMatchesPinFile(t *testing.T) {
+	p, err := RepoPinPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := LoadPin(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if PinnedVersion != pin.Version {
+		t.Errorf("PinnedVersion = %q, pin.json has %q", PinnedVersion, pin.Version)
+	}
+}

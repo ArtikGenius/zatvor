@@ -1,8 +1,9 @@
 // Package api is zatvord's local HTTP API v1 (ADR 0009). It listens on
 // 127.0.0.1 only, publishes its port in Run/api.json and its token in
 // Run/token (both user-only), and checks the token, the Host header and the
-// Origin header on every request. Every response is JSON; errors are
-// {"code","message"} and never carry the text of a wrapped error.
+// Origin header on every request. Every response is JSON, except the zip of
+// GET /v1/diag; errors are {"code","message"} and never carry the text of a
+// wrapped error.
 package api
 
 import (
@@ -80,6 +81,11 @@ type Backend interface {
 	SetDevTools(on bool) ([]devtools.Target, error)
 	// Show asks the UI to show its window (a second launch, K43).
 	Show()
+	// Check runs a fresh tunnel check (engine.Recheck); not connected is
+	// an *engine.Error with engine.CodeNotConnected.
+	Check(ctx context.Context) (engine.CheckResult, error)
+	// Diag writes the diagnostics zip (diag.Bundle) to w.
+	Diag(ctx context.Context, w io.Writer) error
 }
 
 // Discovery is the content of DiscoveryFile.

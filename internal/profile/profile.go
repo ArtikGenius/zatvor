@@ -4,6 +4,8 @@
 package profile
 
 import (
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ArtikGenius/zatvor/internal/happ"
@@ -63,4 +65,23 @@ type Subscription struct {
 	ProviderRouting    *happ.Profile
 	LastGood           time.Time
 	Profiles           []Profile
+}
+
+// URLHost reduces a subscription URL (or a URL already reduced to its host)
+// to the host and port: no user info, path, query or fragment. The API and
+// the diagnostics list subscriptions by it.
+func URLHost(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Host
+	}
+	if i := strings.Index(raw, "://"); i >= 0 {
+		raw = raw[i+3:]
+	}
+	if i := strings.IndexAny(raw, "/?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	if i := strings.LastIndex(raw, "@"); i >= 0 {
+		raw = raw[i+1:]
+	}
+	return raw
 }

@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 )
 
+// PinnedVersion is the Xray-core release third_party/xray/pin.json pins
+// (a test keeps them equal), for version reports such as the diagnostics.
+const PinnedVersion = "v26.11.9"
+
 // Asset is one pinned release archive.
 type Asset struct {
 	Zip    string `json:"zip"`

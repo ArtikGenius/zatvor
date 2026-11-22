@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -56,11 +55,12 @@ import (
 
 // Names inside the data directories.
 const (
-	SettingsFile  = "settings.json"   // in Dirs.Data
-	StoreDir      = "store"           // in Dirs.Data: <mode>/ holds a store, <mode>.key its key file
-	BinDir        = "bin"             // in Dirs.Data: the dev-tool wrappers
-	SafeModeLog   = "safe-mode.jsonl" // in Dirs.Logs: what safe mode would have changed
-	StateFileName = "devtools.proxy"  // in Dirs.Run: the dev-tool proxy URL while connected
+	SettingsFile  = appdir.SettingsFile // in Dirs.Data
+	StoreDir      = "store"             // in Dirs.Data: <mode>/ holds a store, <mode>.key its key file
+	BinDir        = "bin"               // in Dirs.Data: the dev-tool wrappers
+	SafeModeLog   = "safe-mode.jsonl"   // in Dirs.Logs: what safe mode would have changed
+	StateFileName = "devtools.proxy"    // in Dirs.Run: the dev-tool proxy URL while connected
+	LogFile       = "zatvord.log"       // in Dirs.Logs: the daemon log (zatvord writes it, the diagnostics read it)
 )
 
 // ErrLiveRefused: live mode needs Windows and env ZATVOR_ALLOW_LIVE=1
@@ -230,7 +230,8 @@ func (d *daemon) run(ctx context.Context) error {
 		d.logf("store: cannot read the profile store (%s)", storeCode(err))
 	}
 
-	b := newBackend(d, settingsPath, st, stateFile, sys.dev)
+	b := newBackend(d, settingsPath, st, stateFile, sys)
+	b.store = gs
 	b.ensurePorts()
 
 	ed := engine.Deps{
@@ -573,58 +574,4 @@ func writeAtomic(path string, data []byte) (err error) {
 		return err
 	}
 	return os.Rename(tmp, path)
-}
-
-// IsDataDir reports whether dir looks like a Zatvor data directory: it has
-// the settings file, or both the journal and run subdirectories.
-func IsDataDir(dir string) bool {
-	if fi, err := os.Stat(filepath.Join(dir, SettingsFile)); err == nil && fi.Mode().IsRegular() {
-		return true
-	}
-	for _, sub := range []string{"journal", "run"} {
-		if fi, err := os.Stat(filepath.Join(dir, sub)); err != nil || !fi.IsDir() {
-			return false
-		}
-	}
-	return true
-}
-
-// ValidateDataDir checks a --data-dir before appdir.Resolve tightens its
-// permissions: it must be absolute, and neither a filesystem root, nor the
-// home directory itself, nor an existing non-empty directory that is not a
-// Zatvor data directory.
-func ValidateDataDir(path, home string) error {
-	if !filepath.IsAbs(path) {
-		return errors.New("the data directory must be an absolute path")
-	}
-	p := filepath.Clean(path)
-	if filepath.Dir(p) == p {
-		return errors.New("the data directory must not be a filesystem root")
-	}
-	if home != "" && samePath(p, filepath.Clean(home)) {
-		return errors.New("the data directory must not be the home directory itself")
-	}
-	entries, err := os.ReadDir(p)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	case err != nil:
-		return fmt.Errorf("the data directory cannot be read: %w", err)
-	case len(entries) == 0 || IsDataDir(p):
-		return nil
-	}
-	return errors.New("the data directory is a non-empty directory that is not a Zatvor data directory")
-}
-
-func samePath(a, b string) bool {
-	if ra, err := filepath.EvalSymlinks(a); err == nil {
-		a = ra
-	}
-	if rb, err := filepath.EvalSymlinks(b); err == nil {
-		b = rb
-	}
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
 }
