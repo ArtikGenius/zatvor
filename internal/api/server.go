@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -50,7 +52,10 @@ type Backend interface {
 	Status() engine.State
 	// Subscribe streams events until ctx ends, then closes the channel. The
 	// daemon is the only reader of the engine's and subsvc's own channels
-	// and fans them out here.
+	// and fans them out here. The fan-out must never block on a slow
+	// subscriber: when a subscriber's channel is full it drops the event or
+	// closes that channel (the client then reconnects and gets the current
+	// state first).
 	Subscribe(ctx context.Context) <-chan Event
 	// Profiles are every known profile; the API strips them to ProfileInfo.
 	Profiles() []profile.Profile
@@ -157,6 +162,9 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 		BaseContext:       func(net.Listener) context.Context { return base },
+		// net/http logs recovered panic values and connection errors here;
+		// a panic value can hold anything, so nothing is logged unscrubbed.
+		ErrorLog: log.New(io.Discard, "", 0),
 	}
 	served := make(chan struct{})
 	go func() {

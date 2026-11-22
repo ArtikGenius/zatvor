@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -147,6 +148,11 @@ func (s *Server) handler(host, token string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r, host, want) {
 			writeJSON(w, http.StatusForbidden, errorJSON{CodeForbidden, CodeForbidden})
+			return
+		}
+		// ServeMux would answer an unclean path with a text/html redirect.
+		if path.Clean(r.URL.Path) != r.URL.Path {
+			writeError(w, &Error{CodeNotFound, "no such endpoint"})
 			return
 		}
 		if r.ContentLength > MaxBody {

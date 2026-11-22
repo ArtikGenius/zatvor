@@ -121,3 +121,36 @@ func TestNameUsesRunDir(t *testing.T) {
 		t.Errorf("Name = %q, want %q", got, want)
 	}
 }
+
+func TestForwardRefusesChangedDiscovery(t *testing.T) {
+	dirs, err := appdir.Resolve(filepath.Join(t.TempDir(), "Zatvor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &showBackend{}
+	srv := api.New(b, dirs)
+	if _, err := srv.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+	// Another instance replaces api.json between our reads: the token we
+	// hold may belong to either, so nothing is sent.
+	restore := instance.SetAfterTokenRead(func() {
+		d, err := api.ReadDiscovery(dirs)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		other := fmt.Sprintf(`{"version":1,"port":%d,"pid":%d}`, d.Port, d.PID+1)
+		if err := os.WriteFile(filepath.Join(dirs.Run, api.DiscoveryFile), []byte(other), 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+	defer restore()
+	if err := instance.Forward(dirs); err == nil {
+		t.Error("Forward sent although the discovery file changed")
+	}
+	if b.count() != 0 {
+		t.Error("Show ran")
+	}
+}

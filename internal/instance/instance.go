@@ -4,6 +4,7 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +25,9 @@ func Acquire(name string) (release func(), already bool, err error) { return acq
 
 // Forward asks the running instance, found through the discovery and token
 // files in dirs.Run, to show its window: POST /v1/show with the bearer token
-// and the Host the server expects, within 3 s, never through a proxy.
+// and the Host the server expects, within 3 s, never through a proxy. The
+// discovery file is read before and after the token; if it changed, the
+// token may belong to another instance and nothing is sent.
 func Forward(dirs appdir.Dirs) error {
 	d, err := api.ReadDiscovery(dirs)
 	if err != nil {
@@ -33,6 +36,12 @@ func Forward(dirs appdir.Dirs) error {
 	tok, err := api.ReadToken(dirs)
 	if err != nil {
 		return fmt.Errorf("instance: %w", err)
+	}
+	if afterTokenRead != nil {
+		afterTokenRead()
+	}
+	if again, err := api.ReadDiscovery(dirs); err != nil || again != d {
+		return errors.New("instance: the discovery file changed while it was read")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), forwardTimeout)
 	defer cancel()
@@ -56,3 +65,7 @@ func Forward(dirs appdir.Dirs) error {
 	}
 	return nil
 }
+
+// afterTokenRead is a test hook run between the token read and the second
+// discovery read.
+var afterTokenRead func()

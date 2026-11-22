@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -51,6 +52,7 @@ type fakeBackend struct {
 	devtools  *bool
 	force     *bool
 	shows     int
+	panicMsg  string // Status panics with it when set
 	listeners map[chan api.Event]struct{}
 }
 
@@ -62,7 +64,14 @@ func newFake() *fakeBackend {
 	}
 }
 
-func (f *fakeBackend) Status() engine.State { f.mu.Lock(); defer f.mu.Unlock(); return f.state }
+func (f *fakeBackend) Status() engine.State {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.panicMsg != "" {
+		panic(f.panicMsg)
+	}
+	return f.state
+}
 
 func (f *fakeBackend) Subscribe(ctx context.Context) <-chan api.Event {
 	ch := make(chan api.Event, 16)
@@ -738,5 +747,81 @@ func TestStartTwiceFails(t *testing.T) {
 	e := startServer(t, newFake())
 	if _, err := e.srv.Start(context.Background()); err == nil {
 		t.Error("second Start succeeded")
+	}
+}
+
+func TestUncleanPathIsJSON404(t *testing.T) {
+	e := startServer(t, newFake())
+	for _, p := range []string{"/v1//status", "/v1/./status", "/v1/x/../status", "/v1/status/", "//v1/status"} {
+		code, body := e.req("GET", p, "", nil) // the client would follow a redirect
+		if code != 404 || strings.TrimSpace(body) != `{"code":"not_found","message":"no such endpoint"}` {
+			t.Errorf("%s: %d %s, want the JSON 404", p, code, body)
+		}
+	}
+	// The checks still come first.
+	code, body := e.req("GET", "/v1//status", "", func(r *http.Request) { r.Header.Del("Authorization") })
+	wantForbidden(t, "unclean path without token", code, body)
+}
+
+func TestSSEStalledReaderIsDropped(t *testing.T) {
+	restore := api.SetSSEWriteTimeout(200 * time.Millisecond)
+	defer restore()
+	f := newFake()
+	e := startServer(t, f)
+	c, err := net.Dial("tcp", e.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.(*net.TCPConn).SetReadBuffer(4 << 10)
+	fmt.Fprintf(c, "GET /v1/events HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n\r\n", e.addr, e.token)
+	deadline := time.Now().Add(5 * time.Second)
+	for f.listenerCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if f.listenerCount() == 0 {
+		t.Fatal("the stream never subscribed")
+	}
+	// Never read: the socket buffers fill, a write blocks and must time out.
+	big := engine.State{Phase: engine.Connected, Profile: strings.Repeat("p", 64<<10)}
+	deadline = time.Now().Add(20 * time.Second)
+	for f.listenerCount() != 0 && time.Now().Before(deadline) {
+		f.emit(api.StateEvent(big))
+		time.Sleep(time.Millisecond)
+	}
+	if f.listenerCount() != 0 {
+		t.Fatal("a stalled stream is still subscribed")
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the server's goroutines.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+func TestPanicValueNotLogged(t *testing.T) {
+	var buf syncBuffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf) // where net/http logs when Server.ErrorLog is nil
+	defer func() { log.SetOutput(prev); log.SetFlags(flags) }()
+	f := newFake()
+	f.panicMsg = "panic holding " + subURL
+	e := startServer(t, f)
+	r, _ := http.NewRequest("GET", "http://"+e.addr+"/v1/status", nil)
+	r.Header.Set("Authorization", "Bearer "+e.token)
+	if resp, err := client.Do(r); err == nil {
+		resp.Body.Close()
+	}
+	e.srv.Stop()
+	if out := buf.String(); strings.Contains(out, subTok) || strings.Contains(out, "panic") {
+		t.Errorf("server logged %q", out)
 	}
 }

@@ -20,6 +20,8 @@ func Name(appdir.Dirs) string { return "Zatvor" }
 // acquire creates the named mutex Local\<name>-<current user SID>. The
 // mutex exists while a handle to it is open: the handle is kept until
 // release. It is not inheritable, so a child (Xray) never keeps it alive.
+// ERROR_ACCESS_DENIED counts as already running: an elevated instance of the
+// same user holds the mutex with a DACL a non-elevated process cannot open.
 func acquire(name string) (func(), bool, error) {
 	if name == "" || strings.ContainsRune(name, '\\') {
 		return nil, false, fmt.Errorf("instance: invalid mutex name %q", name)
@@ -33,7 +35,7 @@ func acquire(name string) (func(), bool, error) {
 		return nil, false, fmt.Errorf("instance: %w", err)
 	}
 	h, err := windows.CreateMutex(nil, false, full)
-	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) || errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 		if h != 0 {
 			windows.CloseHandle(h)
 		}

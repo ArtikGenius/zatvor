@@ -85,6 +85,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
+	// Every write gets a deadline, so a client that stops reading ends its
+	// stream instead of holding this handler forever.
+	deadline := func() { _ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)) }
+	deadline()
 	w.WriteHeader(http.StatusOK)
 	if writeEvent(w, StateEvent(s.b.Status())) != nil || rc.Flush() != nil {
 		return
@@ -93,6 +97,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer tick.Stop()
 	for {
 		var err error
+		deadline()
 		select {
 		case <-ctx.Done():
 			return
@@ -109,3 +114,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// sseWriteTimeout bounds each write to an event stream.
+var sseWriteTimeout = 10 * time.Second
