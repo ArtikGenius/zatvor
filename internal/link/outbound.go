@@ -198,11 +198,11 @@ func stream(n Node) (*ojson.Object, error) {
 		if e := p["extra"]; e != "" {
 			v, err := ojson.Parse([]byte(e))
 			if err != nil {
-				return nil, fmt.Errorf("link: %s: bad xhttp extra", n.Scheme)
+				return nil, bad(n.Scheme, "bad xhttp extra")
 			}
 			eo, ok := v.(*ojson.Object)
 			if !ok {
-				return nil, fmt.Errorf("link: %s: xhttp extra is not an object", n.Scheme)
+				return nil, bad(n.Scheme, "xhttp extra is not an object")
 			}
 			x.Set("extra", eo)
 		}

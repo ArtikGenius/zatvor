@@ -160,17 +160,21 @@ func TestOutboundOtherProtocols(t *testing.T) {
 }
 
 func TestOutboundErrors(t *testing.T) {
-	for _, l := range []string{
-		"ss://YWVzLTI1Ni1nY206UkVQTEFDRV9NRV9wYXNz@ss.example.com:8388/?plugin=obfs-local%3Bobfs%3Dhttp#p",
-		"vless://REPLACE_ME@h.example.com:443?security=tls&type=kcp#k",
-		"vless://REPLACE_ME@h.example.com:443?security=tls&type=xhttp&extra=%5B1%5D#bad-extra",
+	for _, c := range []struct {
+		link string
+		want error
+	}{
+		{"ss://YWVzLTI1Ni1nY206UkVQTEFDRV9NRV9wYXNz@ss.example.com:8388/?plugin=obfs-local%3Bobfs%3Dhttp#p", ErrUnsupported},
+		{"vless://REPLACE_ME@h.example.com:443?security=tls&type=kcp#k", ErrUnsupported},
+		{"vless://REPLACE_ME@h.example.com:443?security=tls&type=xhttp&extra=%5B1%5D#bad-extra", ErrMalformed},
+		{"vless://REPLACE_ME@h.example.com:443?security=tls&type=xhttp&extra=%7B#bad-json", ErrMalformed},
 	} {
-		n, err := Parse(l)
+		n, err := Parse(c.link)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Outbound(n, "proxy"); err == nil {
-			t.Errorf("%.20s: want error", l)
+		if _, err := Outbound(n, "proxy"); !errors.Is(err, c.want) {
+			t.Errorf("%.20s: err = %v, want %v", c.link, err, c.want)
 		} else if strings.Contains(err.Error(), "REPLACE_ME") {
 			t.Errorf("error leaks secret: %v", err)
 		}

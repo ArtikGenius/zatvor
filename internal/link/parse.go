@@ -11,7 +11,8 @@ import (
 )
 
 // Parse reads one share link. Unknown schemes give ErrUnsupported, encrypted
-// ones ErrEncrypted; other errors name the scheme but never quote the line.
+// ones ErrEncrypted, unreadable ones of a known scheme ErrMalformed. Errors
+// name the scheme but never quote the line.
 func Parse(line string) (Node, error) {
 	line = strings.TrimSpace(line)
 	i := strings.Index(line, "://")
@@ -56,7 +57,8 @@ func printable(s string) string {
 	return s
 }
 
-func bad(scheme, msg string) error { return fmt.Errorf("link: %s: %s", scheme, msg) }
+// bad is an ErrMalformed naming the scheme and the problem, never the link.
+func bad(scheme, msg string) error { return fmt.Errorf("%w: %s: %s", ErrMalformed, scheme, msg) }
 
 // splitLink cuts the remark (after the first '#') and the query (after the
 // first '?') off rest and returns what is left, the query and the remark.

@@ -61,6 +61,9 @@ func TestBadInput(t *testing.T) {
 		if strings.Contains(err.Error(), "REPLACE_ME") || strings.Contains(err.Error(), "example.com") {
 			t.Errorf("%q: error leaks the line: %v", l, err)
 		}
+		if l != "" && !errors.Is(err, ErrMalformed) {
+			t.Errorf("%q: %v, want ErrMalformed", l, err)
+		}
 	}
 }
 

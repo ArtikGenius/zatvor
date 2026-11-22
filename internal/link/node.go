@@ -20,6 +20,9 @@ var (
 	// ErrInsecureTLS marks a node that asks to skip TLS verification without a
 	// pinned certificate; Xray no longer supports allowInsecure.
 	ErrInsecureTLS = errors.New("link: insecure TLS without a pinned certificate is not supported")
+	// ErrMalformed marks a link of a known scheme that cannot be read: bad
+	// address, port, base64, JSON or credential.
+	ErrMalformed = errors.New("link: malformed link")
 )
 
 // Node is one proxy server as found in a share link. Params carries every
