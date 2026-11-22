@@ -37,18 +37,27 @@ func TestDirsUserOnly(t *testing.T) {
 		if err != nil || acl == nil {
 			t.Fatalf("%s: no DACL (%v)", p, err)
 		}
-		if acl.AceCount != 1 {
-			t.Errorf("%s: %d ACEs, want 1", p, acl.AceCount)
+		if acl.AceCount == 0 {
+			t.Errorf("%s: empty DACL", p)
 		}
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(acl, 0, &ace); err != nil {
-			t.Fatal(err)
+		full := false
+		for i := uint32(0); i < uint32(acl.AceCount); i++ {
+			var ace *windows.ACCESS_ALLOWED_ACE
+			if err := windows.GetAce(acl, i, &ace); err != nil {
+				t.Fatal(err)
+			}
+			if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+				t.Errorf("%s: ACE %d type %d, want allow", p, i, ace.Header.AceType)
+			}
+			if sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)); !sid.Equals(user.User.Sid) {
+				t.Errorf("%s: ACE %d is for %s, want only the current user %s", p, i, sid, user.User.Sid)
+			}
+			if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 && ace.Mask&fileAllAccess == fileAllAccess {
+				full = true
+			}
 		}
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
-			t.Errorf("%s: ACE type %d, want allow", p, ace.Header.AceType)
-		}
-		if sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)); !sid.Equals(user.User.Sid) {
-			t.Errorf("%s: ACE is for %s, want the current user %s", p, sid, user.User.Sid)
+		if !full {
+			t.Errorf("%s: the current user has no effective full control", p)
 		}
 	}
 }

@@ -4,6 +4,11 @@ package appdir
 
 import "golang.org/x/sys/windows"
 
+// fileAllAccess is FILE_ALL_ACCESS. A generic right such as GENERIC_ALL on an
+// inheritable ACE makes Windows split it into an effective ACE and an
+// inherit-only one; concrete rights keep a single ACE.
+const fileAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1FF
+
 // restrict replaces the DACL of path with a protected one (no inheritance from
 // the parent) that grants full control to the current user only, and that
 // children inherit.
@@ -13,7 +18,7 @@ func restrict(path string) error {
 		return err
 	}
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
-		AccessPermissions: windows.GENERIC_ALL,
+		AccessPermissions: fileAllAccess,
 		AccessMode:        windows.GRANT_ACCESS,
 		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 		Trustee: windows.TRUSTEE{

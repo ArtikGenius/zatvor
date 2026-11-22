@@ -81,11 +81,18 @@ func parse(data []byte) (Settings, error) {
 // The zero Settings over an existing non-empty file is ErrRefuseEmpty. A zero
 // Version is written as CurrentVersion.
 func Save(path string, s Settings) error {
+	if s.Version > CurrentVersion {
+		return fmt.Errorf("%w: version %d", ErrNewerVersion, s.Version)
+	}
 	old, err := os.ReadFile(path)
 	switch {
 	case err == nil:
 		if s == (Settings{}) && len(bytes.TrimSpace(old)) > 0 {
 			return ErrRefuseEmpty
+		}
+		// A downgrade must not destroy a newer file.
+		if _, perr := parse(old); errors.Is(perr, ErrNewerVersion) {
+			return perr
 		}
 	case !errors.Is(err, fs.ErrNotExist):
 		return err

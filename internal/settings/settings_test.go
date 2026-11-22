@@ -155,3 +155,29 @@ func TestEmptyFileIsCorrupt(t *testing.T) {
 		t.Fatalf("err = %v, want ErrCorrupt", err)
 	}
 }
+
+func TestSaveKeepsNewerFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	const newer = `{"version":999}`
+	if err := os.WriteFile(p, []byte(newer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(p, full()); !errors.Is(err, ErrNewerVersion) {
+		t.Fatalf("err = %v, want ErrNewerVersion", err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != newer {
+		t.Fatal("newer file was overwritten")
+	}
+}
+
+func TestSaveRejectsNewerVersion(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	s := full()
+	s.Version = CurrentVersion + 1
+	if err := Save(p, s); !errors.Is(err, ErrNewerVersion) {
+		t.Fatalf("err = %v, want ErrNewerVersion", err)
+	}
+	if _, err := os.Stat(p); err == nil {
+		t.Fatal("file written")
+	}
+}
