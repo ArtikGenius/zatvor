@@ -25,6 +25,11 @@ const maxMessage = 4096
 var plainKeys = setOf("protocol", "tag", "network", "security", "type", "flow", "fingerprint", "alpn",
 	"loglevel", "domainstrategy", "outboundtag", "inboundtag", "balancertag", "listen", "mode")
 
+// minSecretLen is the shortest standalone secret value (R52). A shorter
+// one, such as a 4-character Reality shortId, would match ordinary words
+// and numbers all over a message, so it is not replaced on its own; it is
+// still replaced as part of every longer secret that holds it (the raw
+// share link, the subscription URL).
 const minSecretLen = 6
 
 // ErrXrayNotRun marks an Xray binary that could not be started.
@@ -110,7 +115,14 @@ func SecretValues(doc []byte) []string {
 // with ***, longest first, so a secret that contains another is replaced
 // whole. Secrets shorter than 6 bytes are ignored: they would match
 // ordinary words.
-func ScrubAll(msg string, secrets []string) string {
+func ScrubAll(msg string, secrets []string) string { return NewScrubber(secrets).Scrub(msg) }
+
+// Scrubber is ScrubAll with the secrets prepared once, for scrubbing many
+// messages with the same secrets.
+type Scrubber struct{ r *strings.Replacer }
+
+// NewScrubber prepares the secrets for Scrub.
+func NewScrubber(secrets []string) *Scrubber {
 	set := map[string]bool{}
 	for _, s := range secrets {
 		if len(s) < minSecretLen {
@@ -123,7 +135,7 @@ func ScrubAll(msg string, secrets []string) string {
 		}
 	}
 	if len(set) == 0 {
-		return msg
+		return &Scrubber{}
 	}
 	vals := make([]string, 0, len(set))
 	for s := range set {
@@ -141,7 +153,15 @@ func ScrubAll(msg string, secrets []string) string {
 	}
 	// A Replacer tries the pairs in argument order at each position, so
 	// the longest match wins.
-	return strings.NewReplacer(pairs...).Replace(msg)
+	return &Scrubber{strings.NewReplacer(pairs...)}
+}
+
+// Scrub replaces every prepared secret in msg with ***.
+func (s *Scrubber) Scrub(msg string) string {
+	if s.r == nil {
+		return msg
+	}
+	return s.r.Replace(msg)
 }
 
 var uuidRe = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)

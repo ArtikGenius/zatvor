@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -38,8 +39,11 @@ const (
 const (
 	shortTimeout = 5 * time.Second  // status
 	longTimeout  = 60 * time.Second // check and diag
-	maxResponse  = 64 << 20         // the largest response read (a diagnostics zip)
 )
+
+// maxResponse is the largest answer accepted (a diagnostics zip); a larger
+// one is an error, never a cut-off file. A variable for tests.
+var maxResponse int64 = 64 << 20
 
 const usage = `Usage: zatvor <command> [flags]
 
@@ -186,9 +190,12 @@ func (c *client) do(method, path string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("the daemon did not answer: %w", errors.Unwrap(err))
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("reading the daemon's answer: %w", err)
+	}
+	if int64(len(body)) > maxResponse {
+		return nil, "", fmt.Errorf("the daemon's answer is larger than %d bytes", maxResponse)
 	}
 	ct := resp.Header.Get("Content-Type")
 	if resp.StatusCode == http.StatusOK {
@@ -465,8 +472,9 @@ func cmdDiag(args []string, env func(string) string, stdout, stderr io.Writer) i
 	}
 	path := *out
 	if !*force {
+		// Early, to skip the download; writeFile checks again atomically.
 		if _, err := os.Lstat(path); err == nil {
-			fmt.Fprintf(stderr, "zatvor diag: %s exists; use --force to replace it\n", path)
+			fmt.Fprintf(stderr, "zatvor diag: %v\n", existsError(path))
 			return exitError
 		}
 	}
@@ -491,8 +499,10 @@ func cmdDiag(args []string, env func(string) string, stdout, stderr io.Writer) i
 }
 
 // writeFile writes data to path atomically: a temp file in the same
-// directory, fsynced, then renamed over path. Without force it refuses
-// when path exists.
+// directory, fsynced, then put in place. With force it is renamed over
+// path. Without, it is hard-linked to path, which fails when path exists
+// however late that file appeared, so nothing is ever replaced; on a file
+// system without hard links path is created exclusively instead.
 func writeFile(path string, data []byte, force bool) (err error) {
 	f, err := os.CreateTemp(filepath.Dir(path), ".zatvor-diag-*.tmp")
 	if err != nil {
@@ -514,12 +524,47 @@ func writeFile(path string, data []byte, force bool) (err error) {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	if !force {
-		if _, serr := os.Lstat(path); serr == nil {
-			return fmt.Errorf("%s exists; use --force to replace it", path)
-		}
+	if force {
+		return os.Rename(tmp, path)
 	}
-	return os.Rename(tmp, path)
+	switch lerr := os.Link(tmp, path); {
+	case lerr == nil:
+		os.Remove(tmp)
+		return nil
+	case errors.Is(lerr, fs.ErrExist):
+		return existsError(path)
+	}
+	os.Remove(tmp)
+	return writeExclusive(path, data)
+}
+
+// writeExclusive creates path, failing when it exists, and writes data.
+// A failed write removes the file it created.
+func writeExclusive(path string, data []byte) (err error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return existsError(path)
+	}
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+			os.Remove(path)
+		}
+	}()
+	if _, err = f.Write(data); err != nil {
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+func existsError(path string) error {
+	return fmt.Errorf("%s exists; use --force to replace it", path)
 }
 
 // ---- output ----

@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/ArtikGenius/zatvor/internal/devtools"
 	"github.com/ArtikGenius/zatvor/internal/engine"
 	"github.com/ArtikGenius/zatvor/internal/ojson"
 	"github.com/ArtikGenius/zatvor/internal/profile"
@@ -75,22 +77,29 @@ type Sources struct {
 	Now           time.Time // the files' time in the zip
 }
 
-// Bundle writes the zip of src to w. The redaction runs over each file's
-// final bytes, so a secret is caught however that file encodes it (raw,
-// JSON-escaped, URL-escaped; validate.SecretVariants).
+// Bundle writes the zip of src to w. Before that:
+//   - the dev-tool journal entries' Prev and Applied values (the user's
+//     own tool settings) become "***", keeping their key names (R50);
+//   - the tunnel's exit addresses in the state become "***" (R51): they
+//     are often the server's address;
+//   - every file's final bytes are redacted with every secret of the
+//     stored subscriptions, however the file encodes it (raw, JSON-escaped,
+//     URL-escaped; validate.SecretVariants), and then the user info of
+//     every URL becomes *** (scheme://***@host; R50), which catches the
+//     user's own proxy credentials wherever they appear.
 func Bundle(w io.Writer, src Sources) error {
 	files, err := render(src)
 	if err != nil {
 		return err
 	}
-	secrets := secretsOf(src.Subscriptions)
+	scrub := validate.NewScrubber(secretsOf(src.Subscriptions))
 	zw := zip.NewWriter(w)
 	for _, name := range Files {
 		f, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: src.Now})
 		if err != nil {
 			return fmt.Errorf("diag: %s: %w", name, err)
 		}
-		if _, err := io.WriteString(f, validate.ScrubAll(string(files[name]), secrets)); err != nil {
+		if _, err := io.WriteString(f, redactUserinfo(scrub.Scrub(string(files[name])))); err != nil {
 			return fmt.Errorf("diag: %s: %w", name, err)
 		}
 	}
@@ -108,16 +117,24 @@ func render(src Sources) (map[string][]byte, error) {
 	for _, s := range src.Subscriptions {
 		hosts = append(hosts, host{profile.URLHost(s.URL)})
 	}
+	st := src.State
+	for _, ip := range []*string{&st.Check.IPv4, &st.Check.IPv6} {
+		if *ip != "" {
+			*ip = "***"
+		}
+	}
 	files := map[string][]byte{
-		"journal.jsonl": src.Journal,
+		"journal.jsonl": redactDevTools(src.Journal),
 		"zatvord.log":   tail(src.DaemonLog, LogLines),
 		"xray.log":      []byte(src.XrayOutput),
 	}
 	for name, v := range map[string]any{
-		"versions.json":      src.Versions,
-		"settings.json":      src.Settings,
-		"state.json":         src.State,
-		"subscriptions.json": struct{ Subscriptions []host }{hosts},
+		"versions.json": src.Versions,
+		"settings.json": src.Settings,
+		"state.json":    st,
+		"subscriptions.json": struct {
+			Subscriptions []host `json:"subscriptions"`
+		}{hosts},
 	} {
 		b, err := json.MarshalIndent(v, "", "  ")
 		if err != nil {
@@ -125,10 +142,80 @@ func render(src Sources) (map[string][]byte, error) {
 		}
 		files[name] = append(b, '\n')
 	}
-	// encoding/json names the field Subscriptions; the file uses the
-	// API's lower-case key.
-	files["subscriptions.json"] = bytes.Replace(files["subscriptions.json"], []byte(`"Subscriptions"`), []byte(`"subscriptions"`), 1)
 	return files, nil
+}
+
+// userinfoRe matches the user info of a URL: scheme://<user info>@, also
+// with JSON-escaped characters in it, never across a space, slash or
+// quote.
+var userinfoRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)(?:[^\s/@"\\]|\\.)+@`)
+
+// redactUserinfo turns scheme://user:pass@host into scheme://***@host.
+func redactUserinfo(s string) string { return userinfoRe.ReplaceAllString(s, "${1}***@") }
+
+// redactDevTools replaces the values of the dev-tool entries' Prev and
+// Applied with "***", keeping the key names: they are the user's own tool
+// settings (their proxy, maybe with credentials), not ours. A line that is
+// not a JSON object (a torn last line) becomes ***.
+func redactDevTools(journal []byte) []byte {
+	if len(journal) == 0 {
+		return journal
+	}
+	var out []byte
+	for _, line := range bytes.SplitAfter(journal, []byte("\n")) {
+		body := bytes.TrimSpace(line)
+		if len(body) == 0 {
+			continue
+		}
+		var e map[string]json.RawMessage
+		if json.Unmarshal(body, &e) != nil {
+			out = append(out, "***\n"...)
+			continue
+		}
+		var kind string
+		if json.Unmarshal(e["kind"], &kind) == nil && kind == devtools.Kind {
+			for _, k := range []string{"prev", "applied"} {
+				if v, ok := e[k]; ok {
+					e[k] = maskValues(v)
+				}
+			}
+			if b, err := json.Marshal(e); err == nil {
+				body = b
+			} else {
+				body = []byte("***")
+			}
+		}
+		out = append(append(out, body...), '\n')
+	}
+	return out
+}
+
+// maskValues is raw with every value that is not an object, a boolean or
+// null replaced by "***"; object keys stay.
+func maskValues(raw json.RawMessage) json.RawMessage {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return json.RawMessage(`"***"`)
+	}
+	var mask func(any) any
+	mask = func(v any) any {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, e := range x {
+				x[k] = mask(e)
+			}
+			return x
+		case bool, nil:
+			return x
+		default:
+			return "***"
+		}
+	}
+	b, err := json.Marshal(mask(v))
+	if err != nil {
+		return json.RawMessage(`"***"`)
+	}
+	return b
 }
 
 // tail returns the last n lines of b.

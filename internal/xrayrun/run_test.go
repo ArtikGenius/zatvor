@@ -463,7 +463,7 @@ func TestFailedStartKeepsNewerStart(t *testing.T) {
 
 func TestOutputIsScrubbedAndKeptAfterStop(t *testing.T) {
 	clk := newFakeClock()
-	r, _ := newRunner(t, "crash", clk)
+	r, dir := newRunner(t, "crash", clk)
 	if out := r.Output(); out != "" {
 		t.Fatalf("Output before Start = %q", out)
 	}
@@ -481,13 +481,35 @@ func TestOutputIsScrubbedAndKeptAfterStop(t *testing.T) {
 	if strings.Count(out, "boom") != 2 || strings.Contains(out, "SECRET_OUT_REPLACE") || !strings.Contains(out, "***") {
 		t.Errorf("Output = %q, want both crashes, scrubbed", out)
 	}
-	// A new Start begins a new output.
-	r2, _ := newRunner(t, "sleep", nil)
-	if err := r2.Start(context.Background(), []byte("{}"), nil); err != nil {
+	// A new Start of the same runner begins a new output.
+	if err := os.WriteFile(filepath.Join(dir, "mode"), []byte("sleep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer r2.Stop(time.Second)
-	if out := r2.Output(); strings.Contains(out, "boom") {
-		t.Errorf("fresh runner Output = %q", out)
+	if err := r.Start(context.Background(), []byte("{}"), nil); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop(time.Second)
+	if out := r.Output(); out != "" {
+		t.Errorf("Output after a second Start = %q, want it empty", out)
+	}
+}
+
+// Once the ring has wrapped, its first line may begin in the middle of a
+// secret, which the scrubber cannot recognize: Output drops it.
+func TestOutputDropsCutFirstLine(t *testing.T) {
+	r := New("xray-not-run", t.TempDir(), nil)
+	r.output, r.outCfg = newRingBuf(32), []byte(`{"password":"SECRETVALUE1"}`)
+	io.WriteString(r.output, "x SECRETVALUE1\nkept\n")
+	if out := r.Output(); out != "x ***\nkept\n" {
+		t.Fatalf("Output before the wrap = %q", out)
+	}
+	io.WriteString(r.output, "aaaaaaaa SECRETVALUE1 bbbb\nkept line\n") // the ring keeps only its last 32 bytes
+	out := r.Output()
+	if out != "kept line\n" {
+		t.Errorf("Output after the wrap = %q, want only the whole lines", out)
+	}
+	io.WriteString(r.output, strings.Repeat("y", 40)) // no newline left at all
+	if out := r.Output(); out != "" {
+		t.Errorf("Output of one cut line = %q, want it empty", out)
 	}
 }

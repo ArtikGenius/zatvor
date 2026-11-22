@@ -78,7 +78,7 @@ type backend struct {
 	stopOps context.CancelFunc
 }
 
-func newBackend(d *daemon, settingsPath string, st settings.Settings, stateFile string, sys *system) *backend {
+func newBackend(d *daemon, settingsPath string, st settings.Settings, stateFile string, sys *system, gs *guardedStore) *backend {
 	var seed [8]byte
 	_, _ = rand.Read(seed[:])
 	ops, stop := context.WithCancel(context.Background())
@@ -89,7 +89,7 @@ func newBackend(d *daemon, settingsPath string, st settings.Settings, stateFile 
 	return &backend{
 		clock: d.opts.Clock, putState: put,
 		logf: d.logf, settingsPath: settingsPath, stateFile: stateFile, dev: sys.dev,
-		version: d.opts.Version, journal: sys.journal, logPath: filepath.Join(d.opts.Dirs.Logs, LogFile),
+		version: d.opts.Version, journal: sys.journal, logPath: filepath.Join(d.opts.Dirs.Logs, LogFile), store: gs,
 		fan: newFanout(), onShow: d.opts.hooks.onShow, st: st,
 		rnd: mrand.New(mrand.NewSource(int64(binary.LittleEndian.Uint64(seed[:])))),
 		ops: ops, stopOps: stop,

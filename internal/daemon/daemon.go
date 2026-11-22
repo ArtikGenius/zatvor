@@ -230,8 +230,7 @@ func (d *daemon) run(ctx context.Context) error {
 		d.logf("store: cannot read the profile store (%s)", storeCode(err))
 	}
 
-	b := newBackend(d, settingsPath, st, stateFile, sys)
-	b.store = gs
+	b := newBackend(d, settingsPath, st, stateFile, sys, gs)
 	b.ensurePorts()
 
 	ed := engine.Deps{

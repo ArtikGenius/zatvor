@@ -162,7 +162,10 @@ func (r *Runner) emit(ev Event) {
 
 // Output is the last 64 KiB of what Xray printed since the last Start,
 // across its restarts, with every secret value of that Start's config
-// replaced by ***. It stays readable after Stop; "" before any Start.
+// replaced by ***. Once older output was dropped, the first line may begin
+// in the middle of a secret the scrubber would not recognize, so Output
+// then starts after the first newline. It stays readable after Stop; ""
+// before any Start.
 func (r *Runner) Output() string {
 	r.mu.Lock()
 	out, cfg := r.output, r.outCfg
@@ -170,7 +173,11 @@ func (r *Runner) Output() string {
 	if out == nil {
 		return ""
 	}
-	return validate.Scrub(out.String(), cfg)
+	text, wrapped := out.snapshot()
+	if wrapped {
+		_, text, _ = strings.Cut(text, "\n")
+	}
+	return validate.Scrub(text, cfg)
 }
 
 // Pid is the process id of the running child, or 0.
@@ -421,9 +428,10 @@ func ignoreDone(err error) error {
 
 // ringBuf keeps the last cap bytes written to it.
 type ringBuf struct {
-	mu  sync.Mutex
-	buf []byte
-	cap int
+	mu      sync.Mutex
+	buf     []byte
+	cap     int
+	wrapped bool // older bytes were dropped
 }
 
 func newRingBuf(capacity int) *ringBuf { return &ringBuf{cap: capacity} }
@@ -434,6 +442,7 @@ func (b *ringBuf) Write(p []byte) (int, error) {
 	b.buf = append(b.buf, p...)
 	if len(b.buf) > b.cap {
 		b.buf = append([]byte(nil), b.buf[len(b.buf)-b.cap:]...)
+		b.wrapped = true
 	}
 	return len(p), nil
 }
@@ -442,4 +451,11 @@ func (b *ringBuf) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.buf)
+}
+
+// snapshot is String and whether older bytes were dropped.
+func (b *ringBuf) snapshot() (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf), b.wrapped
 }

@@ -36,6 +36,13 @@ const (
 	profID   = "prof-0123456789ab"
 )
 
+// URLs with the user's own credentials in their user info.
+const (
+	logProxy    = "https://loguser:logpass_REPLACE@proxy.example:8080/path"
+	pacURL      = "http://pacuser:pacpass_REPLACE@pac.example/proxy.pac"
+	quotedProxy = `http://qu"ser:qu0te\pass_REPLACE@quoted.example:3128`
+)
+
 var subURL = "https://" + subHost + "/api/s/" + url.PathEscape(pathTok) + "?token=" + url.QueryEscape(queryTok) + "&n=1"
 
 // forms are the ways s may be written somewhere: raw, URL query- and
@@ -87,13 +94,19 @@ func leakySources(t *testing.T) diag.Sources {
 	for _, s := range secrets() {
 		all = append(all, forms(s)...)
 	}
-	text := "kept line\n" + strings.Join(all, "\n") + "\nkept line\n"
-	prev, _ := json.Marshal(map[string]any{"server": nodePass, "url": subURL})
-	journal := `{"id":"j1","kind":"sysproxy","target":"lan","prev":` + string(prev) + `,"applied":{},"at":"2026-11-22T10:00:00Z"}` + "\n"
+	text := "kept line\n" + strings.Join(all, "\n") + "\nproxy " + logProxy + "\nkept line\n"
+	prev, _ := json.Marshal(map[string]any{"server": nodePass, "url": subURL, "pac": pacURL})
+	journal := `{"id":"j1","kind":"sysproxy","target":"lan","prev":` + string(prev) + `,"applied":{},"at":"2026-11-22T10:00:00Z"}` + "\n" +
+		// The user's own proxy settings that the dev-tool entries recorded.
+		`{"id":"j2","kind":"devtools","target":"vscode","prev":{"keys":{"/http.proxy":"http://corpuser:corppass_REPLACE@corp-proxy:3128",` +
+		`"/env/HTTPS_PROXY":"http://corp-proxy:3128","/nested":{"inner":"corp-proxy","n":3128}},"exists":true},` +
+		`"applied":{"keys":{"/http.proxy":"http://127.0.0.1:35201","/env/HTTPS_PROXY":"http://127.0.0.1:35201","/nested":null},"exists":true},"at":"2026-11-22T10:00:00Z"}` + "\n" +
+		`{"id":"j3","kind":"devtools","target":"bash","prev":{"block":"export HTTPS_PROXY=corp-proxy:3128","exists":true},` +
+		`"applied":{"block":"export HTTPS_PROXY=http://127.0.0.1:35201","exists":false},"at":"2026-11-22T10:00:00Z"}` + "\n"
 	st := engine.State{Phase: engine.Failed, Profile: profID,
-		Err:      &engine.Error{Code: "xray_exited", Message: "Xray exited: " + nodePass + " " + subURL},
+		Err:      &engine.Error{Code: "xray_exited", Message: "Xray exited: " + nodePass + " " + subURL + " via " + quotedProxy},
 		Warnings: []engine.Error{{Code: "w", Message: strings.Join(all, " ")}},
-		Check:    engine.CheckResult{Status: engine.Unknown}}
+		Check:    engine.CheckResult{Status: engine.OK, IPv4: "203.0.113.77", IPv6: "2001:db8::77"}}
 	set := settings.Defaults()
 	set.ActiveProfile = profID
 	set.LogLevel = nodeUUID
@@ -170,6 +183,52 @@ func TestDiagRedactsEverySecret(t *testing.T) {
 	}
 	if !bytes.Contains(all, []byte("***")) {
 		t.Error("nothing was redacted")
+	}
+
+	// R50: user info of any URL, and the dev-tool entries' values. R51:
+	// the exit addresses.
+	for _, leak := range []string{"loguser", "logpass_REPLACE", "pacuser", "pacpass_REPLACE", "qu0te", "corpuser",
+		"corppass_REPLACE", "corp-proxy", "35201", "203.0.113.77", "2001:db8::77"} {
+		for name, body := range files {
+			if bytes.Contains(body, []byte(leak)) {
+				t.Errorf("%s holds %q", name, leak)
+			}
+		}
+	}
+	for name, want := range map[string]string{
+		"zatvord.log":   "proxy https://***@proxy.example:8080/path",
+		"journal.jsonl": `"keys":{"/env/HTTPS_PROXY":"***","/http.proxy":"***","/nested":{"inner":"***","n":"***"}}`,
+		"state.json":    `"ipv4": "***"`,
+	} {
+		if !bytes.Contains(files[name], []byte(want)) {
+			t.Errorf("%s lacks %q:\n%s", name, want, files[name])
+		}
+	}
+	for _, want := range []string{`http://***@pac.example/proxy.pac`, `"/nested":null`, `"block":"***","exists":true`,
+		`"block":"***","exists":false`, `"kind":"devtools"`, `"target":"vscode"`} {
+		if !bytes.Contains(files["journal.jsonl"], []byte(want)) {
+			t.Errorf("journal.jsonl lacks %q:\n%s", want, files["journal.jsonl"])
+		}
+	}
+	if !bytes.Contains(files["state.json"], []byte(`"ipv6": "***"`)) || !bytes.Contains(files["state.json"], []byte(`@quoted.example:3128`)) {
+		t.Errorf("state.json:\n%s", files["state.json"])
+	}
+}
+
+// R52: a secret value shorter than 6 bytes is not redacted on its own (it
+// would match ordinary words), only as part of a longer secret such as
+// the raw link that holds it.
+func TestDiagShortSecretTradeoff(t *testing.T) {
+	raw := "vless://" + nodeUUID + "@" + server + ":443?security=reality&sid=ab12#short"
+	n := &link.Node{Scheme: "vless", Address: server, Port: 443, Raw: raw,
+		Params: map[string]string{"id": nodeUUID, "security": "reality", "sid": "ab12"}}
+	src := diag.Sources{
+		DaemonLog:     []byte("link " + raw + "\nstandalone ab12\n"),
+		Subscriptions: []profile.Subscription{{URL: subURL, Profiles: []profile.Profile{{ID: profID, Node: n}}}},
+	}
+	_, files := unzip(t, bundle(t, src))
+	if got := string(files["zatvord.log"]); got != "link ***\nstandalone ab12\n" {
+		t.Errorf("zatvord.log = %q, want the link redacted whole and the lone short id kept", got)
 	}
 }
 

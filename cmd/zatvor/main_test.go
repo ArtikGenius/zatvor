@@ -390,3 +390,56 @@ func TestHelpDocumentsExitCodes(t *testing.T) {
 		t.Errorf("unknown command = %d, want 2", code)
 	}
 }
+
+// A file that appears at the target while the bundle downloads is never
+// replaced without --force.
+func TestDiagNoClobberRace(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "bundle.zip")
+	f := newFakeAPI(t, map[string]http.HandlerFunc{
+		"GET /v1/diag": func(w http.ResponseWriter, _ *http.Request) {
+			if err := os.WriteFile(out, []byte("theirs"), 0o600); err != nil {
+				t.Error(err)
+			}
+			w.Header().Set("Content-Type", "application/zip")
+			w.Write([]byte("PK ours"))
+		},
+	})
+	if code, _, errOut := zatvor(t, f.token, "diag", "-o", out, "--data-dir", f.dataDir); code != 1 || !strings.Contains(errOut, "--force") {
+		t.Errorf("diag = %d (%q), want 1 naming --force", code, errOut)
+	}
+	if b, _ := os.ReadFile(out); string(b) != "theirs" {
+		t.Errorf("the other file now holds %q", b)
+	}
+	if es, _ := os.ReadDir(filepath.Dir(out)); len(es) != 1 {
+		t.Errorf("directory holds %d entries, want only the other file", len(es))
+	}
+}
+
+func TestDiagOversizedResponse(t *testing.T) {
+	defer func(n int64) { maxResponse = n }(maxResponse)
+	maxResponse = 16
+	f := newFakeAPI(t, map[string]http.HandlerFunc{
+		"GET /v1/diag": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/zip")
+			w.Write([]byte(strings.Repeat("z", 17)))
+		},
+	})
+	dir := t.TempDir()
+	out := filepath.Join(dir, "bundle.zip")
+	if code, _, errOut := zatvor(t, f.token, "diag", "-o", out, "--data-dir", f.dataDir); code != 1 || !strings.Contains(errOut, "larger than") {
+		t.Errorf("diag = %d (%q), want 1 for a too-large answer", code, errOut)
+	}
+	if es, _ := os.ReadDir(dir); len(es) != 0 {
+		t.Errorf("a too-large answer left %d files", len(es))
+	}
+	// Exactly at the limit is fine.
+	f = newFakeAPI(t, map[string]http.HandlerFunc{
+		"GET /v1/diag": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/zip")
+			w.Write([]byte(strings.Repeat("z", 16)))
+		},
+	})
+	if code, _, errOut := zatvor(t, f.token, "diag", "-o", out, "--data-dir", f.dataDir); code != 0 {
+		t.Errorf("diag at the limit = %d (%q)", code, errOut)
+	}
+}
