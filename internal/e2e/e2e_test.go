@@ -154,7 +154,7 @@ func runClient(t *testing.T, bin string, body []byte, source profile.Source) (st
 
 	mixed := fmt.Sprintf("127.0.0.1:%d", ports.Mixed)
 	r := xrayrun.New(bin, assetDir, nil)
-	if err := r.Start(ctx, cfg, xrayrun.DialReady(mixed)); err != nil {
+	if err := r.Start(ctx, cfg, xrayrun.SOCKSReady(mixed, "", "")); err != nil { // the no-auth mixed inbound
 		t.Fatalf("start client xray: %v", err)
 	}
 	pid := r.Pid()
