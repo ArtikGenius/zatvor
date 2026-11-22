@@ -21,6 +21,9 @@ const (
 type PinFile struct {
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
+	// Aliases are other URLs serving the same bytes (for example the jsDelivr
+	// form Happ profiles use). A profile naming one matches by URL.
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // PinSet is the pin of one publisher.

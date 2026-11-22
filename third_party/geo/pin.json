@@ -2,12 +2,18 @@
   "roscomvpn": {
     "tag": "202611221113 (geoip), 202610120948 (geosite)",
     "geoip": {
-      "url": "https://github.com/hydraponique/roscomvpn-geoip/releases/download/202611221113/geoip.dat",
-      "sha256": "d5720327810967e8e48629d0bc7f0c954372ebdb02ecc061b297361f4e228ae5"
+      "url": "https://raw.githubusercontent.com/hydraponique/roscomvpn-geoip/202611221113/release/geoip.dat",
+      "sha256": "d5720327810967e8e48629d0bc7f0c954372ebdb02ecc061b297361f4e228ae5",
+      "aliases": [
+        "https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip@202611221113/release/geoip.dat"
+      ]
     },
     "geosite": {
-      "url": "https://github.com/hydraponique/roscomvpn-geosite/releases/download/202610120948/geosite.dat",
-      "sha256": "6fadc9298116c5523b1e3cfa46c6c5fed5a218b9b6365be831e358f4823ea464"
+      "url": "https://raw.githubusercontent.com/hydraponique/roscomvpn-geosite/202610120948/release/geosite.dat",
+      "sha256": "95f15c43e6f3356c51e14a444bc9d99a5e4810640070089b7ba46b31d6cdf001",
+      "aliases": [
+        "https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geosite@202610120948/release/geosite.dat"
+      ]
     }
   },
   "v2fly": {

@@ -9,7 +9,8 @@ roscomvpn geoip / geosite data
   https://github.com/hydraponique/roscomvpn-geoip  release 202611221113
   https://github.com/hydraponique/roscomvpn-geosite  release 202610120948
   These repositories carry no licence file. Use is a known and accepted risk.
-  Downloaded at build time with pinned SHA-256 (third_party/geo/pin.json).
+  The git-tracked release/ files at those tags, downloaded at build time with
+  pinned SHA-256 (third_party/geo/pin.json).
 
 v2fly geoip (CC-BY-SA-4.0)
   https://github.com/v2fly/geoip  release 202611080027

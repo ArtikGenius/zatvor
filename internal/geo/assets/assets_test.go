@@ -2,6 +2,8 @@ package assets
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net"
@@ -9,8 +11,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ArtikGenius/zatvor/internal/geo/merge"
 	"github.com/ArtikGenius/zatvor/internal/geo/synth"
@@ -193,7 +197,7 @@ func newGeoServer(t *testing.T, site, ip []string) *geoServer {
 	g.siBody, _ = os.ReadFile(s)
 	g.ipBody, _ = os.ReadFile(i)
 	g.ipSum, g.siSum = sha(g.ipBody), sha(g.siBody)
-	g.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.hits.Add(1)
 		switch r.URL.Path {
 		case "/geoip.dat":
@@ -222,6 +226,11 @@ func newGeoServer(t *testing.T, site, ip []string) *geoServer {
 	return g
 }
 
+// trust makes a's HTTP client accept the server's test certificate.
+func (e *env) trust(g *geoServer) {
+	e.a.tlsConfig = g.Client().Transport.(*http.Transport).TLSClientConfig
+}
+
 func plainDialer(called *atomic.Int64) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		called.Add(1)
@@ -232,36 +241,60 @@ func plainDialer(called *atomic.Int64) func(ctx context.Context, network, addr s
 
 func TestFetchVerifiesSHA256(t *testing.T) {
 	e := newEnv(t)
-	g := newGeoServer(t, []string{"psite"}, []string{"pip"})
-	pg := ProfileGeo{GeoIPURL: g.URL + "/geoip.dat", GeoSiteURL: g.URL + "/geosite.dat"}
+	good := newGeoServer(t, []string{"psite"}, []string{"pip"})
+	e.trust(good)
 	var dials atomic.Int64
-	g.siSum = "bad"
-	if err := e.a.Fetch(context.Background(), pg, plainDialer(&dials)); err == nil {
-		t.Fatal("bad hash accepted")
-	}
-	if _, err := os.Stat(filepath.Join(e.cache, "geosite.dat")); !os.IsNotExist(err) {
-		t.Fatal("cache touched by bad download")
-	}
-	// A correct one lands in the cache and Prepare then uses it.
-	g.siSum = sha(g.siBody)
-	g.ipSum = ""
-	if err := e.a.Fetch(context.Background(), pg, plainDialer(&dials)); err != nil {
+	pgGood := ProfileGeo{GeoIPURL: good.URL + "/geoip.dat", GeoSiteURL: good.URL + "/geosite.dat"}
+	good.ipSum = "" // no checksum published: TLS only
+	if err := e.a.Fetch(context.Background(), pgGood, plainDialer(&dials)); err != nil {
 		t.Fatal(err)
 	}
-	_, missing, err := e.a.Prepare(cfgFor("psite", "pip"), &pg)
+	if m := e.a.loadMeta(); m.GeoIP == nil || m.GeoIP.ChecksumPublished || m.GeoSite == nil || !m.GeoSite.ChecksumPublished {
+		t.Fatalf("meta = %+v %+v", m.GeoIP, m.GeoSite)
+	}
+	before, _ := os.ReadFile(filepath.Join(e.cache, "geosite.dat"))
+	beforeIP, _ := os.ReadFile(filepath.Join(e.cache, "geoip.dat"))
+	beforeMeta, _ := os.ReadFile(filepath.Join(e.cache, metaName))
+
+	// Second server: geoip fine, geosite has a wrong published hash. Neither
+	// file may be swapped.
+	bad := newGeoServer(t, []string{"other"}, []string{"otherip"})
+	bad.siSum = "bad"
+	e.a.tlsConfig = mergePools(good, bad)
+	pgBad := ProfileGeo{GeoIPURL: bad.URL + "/geoip.dat", GeoSiteURL: bad.URL + "/geosite.dat"}
+	if err := e.a.Fetch(context.Background(), pgBad, plainDialer(&dials)); err == nil {
+		t.Fatal("bad hash accepted")
+	}
+	after, _ := os.ReadFile(filepath.Join(e.cache, "geosite.dat"))
+	afterIP, _ := os.ReadFile(filepath.Join(e.cache, "geoip.dat"))
+	afterMeta, _ := os.ReadFile(filepath.Join(e.cache, metaName))
+	if string(before) != string(after) || string(beforeIP) != string(afterIP) || string(beforeMeta) != string(afterMeta) {
+		t.Fatal("cache touched by a failed fetch")
+	}
+
+	// The good profile geo is used by Prepare, and the bundled data is not.
+	_, missing, err := e.a.Prepare(cfgFor("psite", "pip"), &pgGood)
 	if err != nil || len(missing) != 0 {
 		t.Fatalf("prepare with cached profile geo: %v %v", err, missing)
 	}
-	// Without the profile the tag is not found.
 	_, missing, _ = e.a.Prepare(cfgFor("psite", "rip"), nil)
 	if len(missing) != 1 {
 		t.Fatalf("missing = %v", missing)
 	}
 }
 
+func mergePools(gs ...*geoServer) *tls.Config {
+	pool := x509.NewCertPool()
+	for _, g := range gs {
+		pool.AddCert(g.Certificate())
+	}
+	return &tls.Config{RootCAs: pool}
+}
+
 func TestFetchSkipsWhenBundledMatches(t *testing.T) {
 	e := newEnv(t)
 	g := newGeoServer(t, []string{"x"}, []string{"y"})
+	e.trust(g)
 	e.writeSources(t, g.URL+"/geoip.dat", g.URL+"/geosite.dat")
 	var dials atomic.Int64
 	pg := ProfileGeo{GeoIPURL: g.URL + "/geoip.dat", GeoSiteURL: g.URL + "/geosite.dat"}
@@ -276,6 +309,7 @@ func TestFetchSkipsWhenBundledMatches(t *testing.T) {
 func TestFetchSkipsWhenPublishedHashMatchesBundled(t *testing.T) {
 	e := newEnv(t)
 	g := newGeoServer(t, []string{"x"}, []string{"y"})
+	e.trust(g)
 	b, _ := os.ReadFile(filepath.Join(e.bundled, RoscomGeoIP))
 	g.ipSum = sha(b)
 	pg := ProfileGeo{GeoIPURL: g.URL + "/geoip.dat"}
@@ -291,6 +325,7 @@ func TestFetchSkipsWhenPublishedHashMatchesBundled(t *testing.T) {
 func TestFetchUsesGivenDialer(t *testing.T) {
 	e := newEnv(t)
 	g := newGeoServer(t, []string{"psite"}, []string{"pip"})
+	e.trust(g)
 	pg := ProfileGeo{GeoIPURL: g.URL + "/geoip.dat"}
 	boom := errors.New("dialer refused")
 	var calls atomic.Int64
@@ -328,6 +363,7 @@ func TestNeedsBootstrap(t *testing.T) {
 func TestNoAutoUpdateWithoutCall(t *testing.T) {
 	e := newEnv(t)
 	g := newGeoServer(t, []string{"psite"}, []string{"pip"})
+	e.trust(g)
 	pg := ProfileGeo{GeoIPURL: g.URL + "/geoip.dat", GeoSiteURL: g.URL + "/geosite.dat"}
 	e.a.NeedsBootstrap(cfgFor("psite", "pip"), pg)
 	if _, _, err := e.a.Prepare(cfgFor("psite", "pip"), &pg); err != nil {
@@ -335,5 +371,179 @@ func TestNoAutoUpdateWithoutCall(t *testing.T) {
 	}
 	if g.hits.Load() != 0 {
 		t.Fatalf("Assets made %d requests by itself", g.hits.Load())
+	}
+}
+
+// rawServer serves fixed bodies per path over TLS.
+func rawServer(t *testing.T, h http.HandlerFunc) *geoServer {
+	t.Helper()
+	g := &geoServer{}
+	g.Server = httptest.NewTLSServer(h)
+	t.Cleanup(g.Close)
+	return g
+}
+
+func TestFetchRejectsNonDatDownload(t *testing.T) {
+	e := newEnv(t)
+	g := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte("<html><body>captive portal</body></html>"))
+	})
+	e.trust(g)
+	var dials atomic.Int64
+	err := e.a.Fetch(context.Background(), ProfileGeo{GeoSiteURL: g.URL + "/geosite.dat"}, plainDialer(&dials))
+	if err == nil {
+		t.Fatal("HTML page accepted as geosite")
+	}
+	if _, err := os.Stat(filepath.Join(e.cache, "geosite.dat")); !os.IsNotExist(err) {
+		t.Fatal("garbage cached")
+	}
+	// Empty body is not a geo file either.
+	g2 := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			http.NotFound(w, r)
+		}
+	})
+	e.trust(g2)
+	if err := e.a.Fetch(context.Background(), ProfileGeo{GeoIPURL: g2.URL + "/geoip.dat"}, plainDialer(&dials)); err == nil {
+		t.Fatal("empty body accepted")
+	}
+}
+
+func TestPrepareIgnoresCorruptCache(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(e.cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	junk := []byte("<html>not a dat</html>")
+	os.WriteFile(filepath.Join(e.cache, "geosite.dat"), junk, 0o644)
+	u := "https://example.invalid/geosite.dat"
+	m := cacheMeta{GeoSite: &cacheEntry{URL: u, SHA256: sha(junk)}}
+	if err := e.a.saveMeta(m); err != nil {
+		t.Fatal(err)
+	}
+	_, missing, err := e.a.Prepare(cfgFor("rsite", "rip"), &ProfileGeo{GeoSiteURL: u})
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("prepare: %v %v", err, missing)
+	}
+}
+
+func TestFetchRejectsInsecureURL(t *testing.T) {
+	e := newEnv(t)
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("x")) }))
+	defer plain.Close()
+	var dials atomic.Int64
+	err := e.a.Fetch(context.Background(), ProfileGeo{GeoIPURL: plain.URL + "/geoip.dat"}, plainDialer(&dials))
+	if !errors.Is(err, ErrInsecureURL) || dials.Load() != 0 {
+		t.Fatalf("err=%v dials=%d", err, dials.Load())
+	}
+	// A redirect from https to http is refused.
+	g := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+r.URL.Path, http.StatusFound)
+	})
+	e.trust(g)
+	err = e.a.Fetch(context.Background(), ProfileGeo{GeoIPURL: g.URL + "/geoip.dat"}, plainDialer(&dials))
+	if err == nil || !strings.Contains(err.Error(), ErrInsecureURL.Error()) {
+		t.Fatalf("redirect err = %v", err)
+	}
+}
+
+func TestFetchChecksumErrors(t *testing.T) {
+	e := newEnv(t)
+	for name, h := range map[string]http.HandlerFunc{
+		"500 on checksum": func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", 500) },
+		"malformed checksum": func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("not-a-hash  file"))
+		},
+	} {
+		g := rawServer(t, h)
+		e.trust(g)
+		var dials atomic.Int64
+		err := e.a.Fetch(context.Background(), ProfileGeo{GeoIPURL: g.URL + "/geoip.dat"}, plainDialer(&dials))
+		if err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+		if _, err := os.Stat(filepath.Join(e.cache, "geoip.dat")); !os.IsNotExist(err) {
+			t.Fatalf("%s: cache written", name)
+		}
+	}
+}
+
+func TestFetchSizeCap(t *testing.T) {
+	e := newEnv(t)
+	e.a.maxFile = 1024 // the real cap is 64 MiB; same code path
+	g := rawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(make([]byte, 2000))
+	})
+	e.trust(g)
+	var dials atomic.Int64
+	err := e.a.Fetch(context.Background(), ProfileGeo{GeoIPURL: g.URL + "/geoip.dat"}, plainDialer(&dials))
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v", err)
+	}
+	if maxFile != 64<<20 {
+		t.Fatal("default cap changed")
+	}
+}
+
+func TestAliasURLMatchesBundled(t *testing.T) {
+	e := newEnv(t)
+	m := map[string]PinFile{RoscomGeoSite: {URL: "https://raw.example/x", Aliases: []string{"https://cdn.example/alias.dat"}}}
+	b, _ := json.Marshal(m)
+	os.WriteFile(filepath.Join(e.bundled, SourcesFile), b, 0o644)
+	var dials atomic.Int64
+	if err := e.a.Fetch(context.Background(), ProfileGeo{GeoSiteURL: "https://cdn.example/alias.dat"}, plainDialer(&dials)); err != nil || dials.Load() != 0 {
+		t.Fatalf("err=%v dials=%d", err, dials.Load())
+	}
+	if e.a.NeedsBootstrap(cfgFor("psite", "rip"), ProfileGeo{GeoSiteURL: "https://cdn.example/alias.dat"}) {
+		t.Fatal("bootstrap wanted for a URL that is the bundled file")
+	}
+}
+
+func TestNeedsBootstrapByKind(t *testing.T) {
+	e := newEnv(t)
+	// Missing geosite tag, but the profile only names a geoip URL.
+	if e.a.NeedsBootstrap(cfgFor("psite", "rip"), ProfileGeo{GeoIPURL: "https://example.invalid/geoip.dat"}) {
+		t.Fatal("geoip URL cannot supply a geosite tag")
+	}
+	if e.a.NeedsBootstrap(cfgFor("psite", "rip"), ProfileGeo{GeoSiteURL: "http://example.invalid/geosite.dat"}) {
+		t.Fatal("http URL cannot be fetched")
+	}
+}
+
+func TestPruneOrdersByMarkerAndDropsOldTemp(t *testing.T) {
+	e := newEnv(t)
+	d1, _, _ := e.a.Prepare(cfgFor("rsite", "rip"), nil)
+	d2, _, _ := e.a.Prepare(cfgFor("shared", "rip"), nil)
+	old := filepath.Join(e.merged, ".tmp-orphan")
+	fresh := filepath.Join(e.merged, ".tmp-fresh")
+	os.Mkdir(old, 0o755)
+	os.Mkdir(fresh, 0o755)
+	past := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(old, past, past)
+	// Make d1 look newest by dir mtime; the marker order must still win.
+	future := time.Now().Add(time.Hour)
+	os.Chtimes(d1, future, future)
+	d3, _, err := e.a.Prepare(cfgFor("vsite", "rip"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d1); !os.IsNotExist(err) {
+		t.Fatal("oldest set (by marker) survived")
+	}
+	for _, d := range []string{d2, d3, fresh} {
+		if _, err := os.Stat(d); err != nil {
+			t.Fatalf("%s gone: %v", d, err)
+		}
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatal("old temp dir kept")
 	}
 }

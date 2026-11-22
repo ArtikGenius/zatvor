@@ -9,12 +9,14 @@ package assets
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,7 +35,8 @@ const (
 	markerName = ".complete"
 	metaName   = "meta.json"
 	keepSets   = 2
-	maxFile    = 64 << 20
+	maxFile    = 64 << 20 // default cap per downloaded file
+	tmpMaxAge  = time.Hour
 )
 
 // ProfileGeo holds the geo file URLs a profile names (Happ Geoipurl and
@@ -47,6 +50,8 @@ func (p ProfileGeo) any() bool { return p.GeoIPURL != "" || p.GeoSiteURL != "" }
 // Assets prepares merged geo sets.
 type Assets struct {
 	bundled, cache, merged string
+	maxFile                int64
+	tlsConfig              *tls.Config // nil = system roots; tests set it
 	mu                     sync.Mutex
 }
 
@@ -54,7 +59,7 @@ type Assets struct {
 // tools/geofetch), caching profile downloads in cacheDir and building merged
 // sets under mergedRoot.
 func New(bundledDir, cacheDir, mergedRoot string) *Assets {
-	return &Assets{bundled: bundledDir, cache: cacheDir, merged: mergedRoot}
+	return &Assets{bundled: bundledDir, cache: cacheDir, merged: mergedRoot, maxFile: maxFile}
 }
 
 // cacheEntry describes one cached profile file.
@@ -101,8 +106,14 @@ func (a *Assets) cachedPath(kind, url string, e *cacheEntry) (path, sum string) 
 		return "", ""
 	}
 	p := filepath.Join(a.cache, kind+".dat")
-	s, err := fileSHA(p)
-	if err != nil || s != e.SHA256 {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "", ""
+	}
+	s := sha(b)
+	// A cached file that no longer matches its record or does not parse is
+	// ignored; bundled data serves instead.
+	if s != e.SHA256 || validDat(b, kind == "geosite") != nil {
 		return "", ""
 	}
 	return p, s
@@ -253,8 +264,7 @@ func (a *Assets) Prepare(cfg []byte, profileGeo *ProfileGeo) (assetDir string, m
 	key := setKey(allSite, allIP, in.sums)
 	dir := filepath.Join(a.merged, key)
 	if _, err := os.Stat(filepath.Join(dir, markerName)); err == nil {
-		now := time.Now()
-		_ = os.Chtimes(dir, now, now)
+		_ = writeAtomic(filepath.Join(dir, markerName), a.marker())
 		a.prune(key)
 		return dir, missing, nil
 	}
@@ -272,7 +282,7 @@ func (a *Assets) Prepare(cfg []byte, profileGeo *ProfileGeo) (assetDir string, m
 	if err := syncDirFiles(tmp, "geosite.dat", "geoip.dat"); err != nil {
 		return "", nil, err
 	}
-	if err := writeMarker(filepath.Join(tmp, markerName)); err != nil {
+	if err := writeMarker(filepath.Join(tmp, markerName), a.marker()); err != nil {
 		return "", nil, err
 	}
 	// An incomplete dir under this key is garbage: replace it.
@@ -302,12 +312,12 @@ func syncDirFiles(dir string, names ...string) error {
 	return nil
 }
 
-func writeMarker(path string) error {
+func writeMarker(path string, content []byte) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString("ok\n"); err != nil {
+	if _, err := f.Write(content); err != nil {
 		f.Close()
 		return err
 	}
@@ -318,6 +328,35 @@ func writeMarker(path string) error {
 	return f.Close()
 }
 
+type markerData struct {
+	Seq int64 `json:"seq"`
+}
+
+func markerSeq(dir string) (int64, bool) {
+	b, err := os.ReadFile(filepath.Join(dir, markerName))
+	if err != nil {
+		return 0, false
+	}
+	var m markerData
+	_ = json.Unmarshal(b, &m) // an unreadable marker still marks completeness, as oldest
+	return m.Seq, true
+}
+
+// marker returns marker content with a sequence number above every existing
+// set's and the clock's, so ordering never depends on directory mtimes.
+func (a *Assets) marker() []byte {
+	seq := time.Now().UnixNano()
+	if ents, err := os.ReadDir(a.merged); err == nil {
+		for _, e := range ents {
+			if n, ok := markerSeq(filepath.Join(a.merged, e.Name())); ok && n >= seq {
+				seq = n + 1
+			}
+		}
+	}
+	b, _ := json.Marshal(markerData{Seq: seq})
+	return b
+}
+
 // syncDir flushes directory entries where the platform allows it.
 func syncDir(dir string) {
 	if f, err := os.Open(dir); err == nil {
@@ -326,8 +365,9 @@ func syncDir(dir string) {
 	}
 }
 
-// prune removes incomplete sets and all but the newest keepSets complete ones.
-// The set named keep is never removed.
+// prune removes incomplete sets, orphaned temp dirs older than tmpMaxAge and
+// all but the newest keepSets complete sets (by marker sequence). The set
+// named keep is never removed.
 func (a *Assets) prune(keep string) {
 	ents, err := os.ReadDir(a.merged)
 	if err != nil {
@@ -335,32 +375,30 @@ func (a *Assets) prune(keep string) {
 	}
 	type set struct {
 		name string
-		mod  time.Time
+		seq  int64
 	}
 	var complete []set
 	for _, e := range ents {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".tmp-") {
+		if !e.IsDir() {
 			continue
 		}
 		p := filepath.Join(a.merged, e.Name())
-		if _, err := os.Stat(filepath.Join(p, markerName)); err != nil {
+		if strings.HasPrefix(e.Name(), ".tmp-") {
+			if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > tmpMaxAge {
+				os.RemoveAll(p)
+			}
+			continue
+		}
+		seq, ok := markerSeq(p)
+		if !ok {
 			if e.Name() != keep {
 				os.RemoveAll(p)
 			}
 			continue
 		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		complete = append(complete, set{e.Name(), info.ModTime()})
+		complete = append(complete, set{e.Name(), seq})
 	}
-	sort.Slice(complete, func(i, j int) bool {
-		if !complete[i].mod.Equal(complete[j].mod) {
-			return complete[i].mod.After(complete[j].mod)
-		}
-		return complete[i].name == keep
-	})
+	sort.Slice(complete, func(i, j int) bool { return complete[i].seq > complete[j].seq })
 	for i, s := range complete {
 		if i >= keepSets && s.name != keep {
 			os.RemoveAll(filepath.Join(a.merged, s.name))
@@ -369,8 +407,9 @@ func (a *Assets) prune(keep string) {
 }
 
 // NeedsBootstrap reports that tags cfg needs are missing from the bundled and
-// cached data while the profile names geo URLs that could supply them. The
-// caller then fetches through the tunnel (spec §16 Q2.10).
+// cached data while the profile names an https geo URL of that kind which is
+// not already cached or bundled and so could supply them. The caller then
+// fetches through the tunnel (spec §16 Q2.10).
 func (a *Assets) NeedsBootstrap(cfg []byte, pg ProfileGeo) bool {
 	if !pg.any() {
 		return false
@@ -378,118 +417,220 @@ func (a *Assets) NeedsBootstrap(cfg []byte, pg ProfileGeo) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	_, _, _, missing, _, _, err := a.plan(cfg, &pg)
-	return err == nil && len(missing) > 0
+	if err != nil {
+		return false
+	}
+	meta := a.loadMeta()
+	usable := func(kind, u string, e *cacheEntry) bool {
+		if u == "" || checkHTTPS(u) != nil || a.bundledURLs()[u] {
+			return false
+		}
+		p, _ := a.cachedPath(kind, u, e)
+		return p == ""
+	}
+	for _, m := range missing {
+		if m.Kind == "geosite" && usable("geosite", pg.GeoSiteURL, meta.GeoSite) {
+			return true
+		}
+		if m.Kind == "geoip" && usable("geoip", pg.GeoIPURL, meta.GeoIP) {
+			return true
+		}
+	}
+	return false
 }
 
-var errNoChecksum = errors.New("no checksum published")
+var errNotFound = errors.New("not found")
 
-// Fetch downloads the geo files pg names into the cache, through dial only.
-// A file is skipped when its URL is already cached, equals a bundled file's
-// pinned URL, or its published SHA-256 equals a bundled file's. A published
-// "<url>.sha256" must match the download; a 404 for it means none is
-// published and only TLS protects the file (recorded in the cache metadata).
-// The cache is replaced atomically and only after verification.
-func (a *Assets) Fetch(ctx context.Context, pg ProfileGeo, dial subfetch.Dialer) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	client := &http.Client{Transport: &http.Transport{
-		Proxy:       nil,
-		DialContext: dial,
-	}}
-	defer client.CloseIdleConnections()
-	if err := os.MkdirAll(a.cache, 0o755); err != nil {
-		return err
-	}
-	for _, k := range []struct {
-		kind, url string
-		bundled   []string
-	}{
-		{"geoip", pg.GeoIPURL, []string{RoscomGeoIP, V2flyGeoIP}},
-		{"geosite", pg.GeoSiteURL, []string{RoscomGeoSite, V2flyGeoSite}},
-	} {
-		if k.url == "" {
-			continue
-		}
-		if err := a.fetchOne(ctx, client, k.kind, k.url, k.bundled); err != nil {
-			return fmt.Errorf("geo assets: %s: %w", k.kind, err)
-		}
+// ErrInsecureURL is returned for a profile geo URL that is not https.
+var ErrInsecureURL = errors.New("geo assets: profile geo URL must be https")
+
+func checkHTTPS(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return ErrInsecureURL
 	}
 	return nil
 }
 
-func (a *Assets) bundledURLs() map[string]string {
-	out := map[string]string{}
+// validDat reports whether b parses as a non-empty geosite (site) or geoip
+// list. A captive-portal page or truncated file fails here.
+func validDat(b []byte, site bool) error {
+	n := 0
+	if site {
+		var l geodata.GeoSiteList
+		if err := proto.Unmarshal(b, &l); err != nil {
+			return err
+		}
+		n = len(l.Entry)
+	} else {
+		var l geodata.GeoIPList
+		if err := proto.Unmarshal(b, &l); err != nil {
+			return err
+		}
+		n = len(l.Entry)
+	}
+	if n == 0 {
+		return errors.New("no entries")
+	}
+	return nil
+}
+
+// result of the verification phase for one kind.
+type fetched struct {
+	kind  string
+	drop  bool // bundled data serves: forget the cached file
+	body  []byte
+	entry *cacheEntry
+}
+
+// Fetch downloads the geo files pg names into the cache, through dial only.
+// Every URL must be https. A file is skipped when its URL is already cached,
+// equals a bundled file's pinned URL (or alias), or its published SHA-256
+// equals a bundled file's. A published "<url>.sha256" must match the
+// download; a 404 for it means none is published and only TLS protects the
+// file (recorded in the cache metadata). A download must parse as a geo dat.
+// Both files are downloaded and verified before either is swapped into the
+// cache, so a failure leaves the cache untouched.
+func (a *Assets) Fetch(ctx context.Context, pg ProfileGeo, dial subfetch.Dialer) error {
+	for _, u := range []string{pg.GeoIPURL, pg.GeoSiteURL} {
+		if u != "" {
+			if err := checkHTTPS(u); err != nil {
+				return err
+			}
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 nil,
+			DialContext:           dial,
+			TLSClientConfig:       a.tlsConfig,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return ErrInsecureURL
+			}
+			if len(via) >= 10 {
+				return errors.New("too many redirects")
+			}
+			return nil
+		},
+	}
+	defer client.CloseIdleConnections()
+	if err := os.MkdirAll(a.cache, 0o755); err != nil {
+		return err
+	}
+	meta := a.loadMeta()
+	var work []fetched
+	for _, k := range []struct {
+		kind, url string
+		cur       *cacheEntry
+		bundled   []string
+	}{
+		{"geoip", pg.GeoIPURL, meta.GeoIP, []string{RoscomGeoIP, V2flyGeoIP}},
+		{"geosite", pg.GeoSiteURL, meta.GeoSite, []string{RoscomGeoSite, V2flyGeoSite}},
+	} {
+		if k.url == "" {
+			continue
+		}
+		f, err := a.verify(ctx, client, k.kind, k.url, k.cur, k.bundled)
+		if err != nil {
+			return fmt.Errorf("geo assets: %s: %w", k.kind, err)
+		}
+		if f != nil {
+			work = append(work, *f)
+		}
+	}
+	changed := false
+	for _, f := range work {
+		cur := &meta.GeoIP
+		if f.kind == "geosite" {
+			cur = &meta.GeoSite
+		}
+		if f.drop {
+			if *cur != nil {
+				*cur = nil
+				changed = true
+			}
+			continue
+		}
+		if err := writeAtomic(filepath.Join(a.cache, f.kind+".dat"), f.body); err != nil {
+			return err
+		}
+		*cur = f.entry
+		changed = true
+	}
+	if changed {
+		return a.saveMeta(meta)
+	}
+	return nil
+}
+
+func (a *Assets) bundledURLs() map[string]bool {
+	out := map[string]bool{}
 	var src map[string]PinFile
 	if b, err := os.ReadFile(filepath.Join(a.bundled, SourcesFile)); err == nil {
 		_ = json.Unmarshal(b, &src)
 	}
-	for n, p := range src {
-		out[n] = p.URL
+	for _, p := range src {
+		out[p.URL] = true
+		for _, al := range p.Aliases {
+			out[al] = true
+		}
 	}
 	return out
 }
 
-func (a *Assets) fetchOne(ctx context.Context, c *http.Client, kind, url string, bundled []string) error {
-	meta := a.loadMeta()
-	cur := &meta.GeoIP
-	if kind == "geosite" {
-		cur = &meta.GeoSite
+// verify downloads and checks one file. It returns nil when nothing needs to
+// change.
+func (a *Assets) verify(ctx context.Context, c *http.Client, kind, url string, cur *cacheEntry, bundled []string) (*fetched, error) {
+	if p, _ := a.cachedPath(kind, url, cur); p != "" {
+		return nil, nil
 	}
-	if p, _ := a.cachedPath(kind, url, *cur); p != "" {
-		return nil
-	}
-	urls := a.bundledURLs()
-	for _, n := range bundled {
-		if urls[n] == url {
-			return a.dropCached(&meta, cur)
-		}
+	drop := &fetched{kind: kind, drop: true}
+	if a.bundledURLs()[url] {
+		return drop, nil
 	}
 
 	want, err := get(ctx, c, url+".sha256", 4096)
 	published := true
 	var wantSum string
 	switch {
-	case errors.Is(err, errNoChecksum):
+	case errors.Is(err, errNotFound):
 		published = false
 	case err != nil:
-		return fmt.Errorf("checksum: %w", err)
+		return nil, fmt.Errorf("checksum: %w", err)
 	default:
 		wantSum = firstHex(string(want))
 		if wantSum == "" {
-			return errors.New("checksum file is malformed")
+			return nil, errors.New("checksum file is malformed")
 		}
 		for _, n := range bundled {
 			if s, err := fileSHA(filepath.Join(a.bundled, n)); err == nil && s == wantSum {
-				return a.dropCached(&meta, cur)
+				return drop, nil
 			}
 		}
 	}
 
-	body, err := get(ctx, c, url, maxFile)
+	body, err := get(ctx, c, url, a.maxFile)
 	if err != nil {
-		if errors.Is(err, errNoChecksum) {
-			return errors.New("file not found (HTTP 404)")
+		if errors.Is(err, errNotFound) {
+			return nil, errors.New("file not found (HTTP 404)")
 		}
-		return err
+		return nil, err
 	}
 	got := sha(body)
 	if published && got != wantSum {
-		return errors.New("SHA-256 mismatch with published checksum")
+		return nil, errors.New("SHA-256 mismatch with published checksum")
 	}
-	if err := writeAtomic(filepath.Join(a.cache, kind+".dat"), body); err != nil {
-		return err
+	if err := validDat(body, kind == "geosite"); err != nil {
+		return nil, fmt.Errorf("not a geo data file: %w", err)
 	}
-	*cur = &cacheEntry{URL: url, SHA256: got, ChecksumPublished: published, FetchedAt: time.Now().UTC()}
-	return a.saveMeta(meta)
-}
-
-// dropCached forgets a cached file of the kind: the bundled data now serves.
-func (a *Assets) dropCached(meta *cacheMeta, cur **cacheEntry) error {
-	if *cur == nil {
-		return nil
-	}
-	*cur = nil
-	return a.saveMeta(*meta)
+	return &fetched{kind: kind, body: body,
+		entry: &cacheEntry{URL: url, SHA256: got, ChecksumPublished: published, FetchedAt: time.Now().UTC()}}, nil
 }
 
 func (a *Assets) saveMeta(m cacheMeta) error {
@@ -513,7 +654,7 @@ func firstHex(s string) string {
 	return strings.ToLower(f[0])
 }
 
-// get reads a URL up to limit bytes. A 404 returns errNoChecksum (the caller
+// get reads a URL up to limit bytes. A 404 returns errNotFound (the caller
 // decides what a missing resource means); any other non-200 is an error.
 func get(ctx context.Context, c *http.Client, url string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -526,7 +667,7 @@ func get(ctx context.Context, c *http.Client, url string, limit int64) ([]byte, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, errNoChecksum
+		return nil, errNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -543,9 +684,9 @@ func get(ctx context.Context, c *http.Client, url string, limit int64) ([]byte, 
 
 // stripURL drops the URL from a *url.Error so it never reaches logs.
 func stripURL(err error) error {
-	type unwrapper interface{ Unwrap() error }
-	if u, ok := err.(unwrapper); ok && u.Unwrap() != nil {
-		return u.Unwrap()
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		return ue.Err
 	}
 	return err
 }
