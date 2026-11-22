@@ -5,18 +5,25 @@ package sysapi
 
 import "time"
 
-// ProxyState is the OS system-proxy setting.
+// ProxyState is the OS system-proxy setting of one connection.
 type ProxyState struct {
-	Enabled bool     `json:"enabled"`
-	Server  string   `json:"server,omitempty"`  // host:port
-	Bypass  []string `json:"bypass,omitempty"`  // hosts that skip the proxy
-	PACURL  string   `json:"pac_url,omitempty"` // auto-config URL, if any
+	Enabled    bool     `json:"enabled"`               // manual proxy (Server) in use
+	Server     string   `json:"server,omitempty"`      // host:port, kept even when not Enabled
+	Bypass     []string `json:"bypass,omitempty"`      // hosts that skip the proxy, in order
+	PACURL     string   `json:"pac_url,omitempty"`     // auto-config URL in use, if any
+	AutoDetect bool     `json:"auto_detect,omitempty"` // WPAD auto-detection in use
 }
 
-// SystemProxy reads and writes the OS system proxy.
+// SystemProxy reads and writes the OS system proxy. Get and Set are the LAN
+// settings; GetConn and SetConn address one connection, where name "" is the
+// LAN settings and any other name is an entry listed by Connections.
 type SystemProxy interface {
 	Get() (ProxyState, error)
 	Set(ProxyState) error
+	// Connections lists the dial-up/VPN (RAS) entries, not the LAN.
+	Connections() ([]string, error)
+	GetConn(name string) (ProxyState, error)
+	SetConn(name string, s ProxyState) error
 }
 
 // ProcID identifies a process across PID reuse: the PID plus the creation

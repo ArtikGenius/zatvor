@@ -13,7 +13,8 @@ import (
 type Recorder struct {
 	mu    sync.Mutex
 	w     io.Writer
-	proxy ProxyState
+	proxy ProxyState            // LAN settings
+	conns map[string]ProxyState // RAS entries set through SetConn
 }
 
 // NewRecorder returns a Recorder that logs to w.
@@ -58,6 +59,50 @@ func (r *Recorder) Set(s ProxyState) error {
 		return err
 	}
 	r.proxy = copyState(s)
+	return nil
+}
+
+// Connections reports no RAS entries: the Recorder has none of its own.
+func (r *Recorder) Connections() ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return nil, r.record("proxy.connections", struct{}{})
+}
+
+type connArgs struct {
+	Conn  string      `json:"conn"`
+	State *ProxyState `json:"state,omitempty"`
+}
+
+// GetConn returns the last state passed to SetConn for name, or the zero
+// state. Name "" is the LAN settings, the same as Get.
+func (r *Recorder) GetConn(name string) (ProxyState, error) {
+	if name == "" {
+		return r.Get()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.record("proxy.get_conn", connArgs{Conn: name}); err != nil {
+		return ProxyState{}, err
+	}
+	return copyState(r.conns[name]), nil
+}
+
+// SetConn records the state of one connection; the OS is not changed. Name
+// "" is the LAN settings, the same as Set.
+func (r *Recorder) SetConn(name string, s ProxyState) error {
+	if name == "" {
+		return r.Set(s)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.record("proxy.set_conn", connArgs{Conn: name, State: &s}); err != nil {
+		return err
+	}
+	if r.conns == nil {
+		r.conns = map[string]ProxyState{}
+	}
+	r.conns[name] = copyState(s)
 	return nil
 }
 

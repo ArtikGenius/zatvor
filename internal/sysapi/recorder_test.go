@@ -81,3 +81,42 @@ func TestRecorderGetZeroAndProcessOps(t *testing.T) {
 }
 
 var _ SystemProxy = (*Recorder)(nil)
+
+func TestRecorderPerConnection(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRecorder(&buf)
+	names, err := r.Connections()
+	if err != nil || len(names) != 0 {
+		t.Fatalf("Connections = %v, %v; want none", names, err)
+	}
+	lan := ProxyState{Enabled: true, Server: "127.0.0.1:10808"}
+	ras := ProxyState{PACURL: "http://pac.example.test/p.pac", AutoDetect: true}
+	if err := r.SetConn("", lan); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetConn("Office VPN", ras); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Get(); err != nil || got.Server != lan.Server || !got.Enabled {
+		t.Fatalf("Get after SetConn(\"\") = %+v, %v; want %+v", got, err, lan)
+	}
+	if got, err := r.GetConn("Office VPN"); err != nil || got.PACURL != ras.PACURL || !got.AutoDetect || got.Enabled {
+		t.Fatalf("GetConn(Office VPN) = %+v, %v; want %+v", got, err, ras)
+	}
+	if got, err := r.GetConn("Other"); err != nil || got.Enabled || got.PACURL != "" {
+		t.Fatalf("GetConn(unset) = %+v, %v; want zero", got, err)
+	}
+	wantOps := []string{"proxy.connections", "proxy.set", "proxy.set_conn", "proxy.get", "proxy.get_conn", "proxy.get_conn"}
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if len(lines) != len(wantOps) {
+		t.Fatalf("got %d lines, want %d:\n%s", len(lines), len(wantOps), buf.String())
+	}
+	for i, op := range wantOps {
+		if !strings.Contains(lines[i], `"op":"`+op+`"`) {
+			t.Fatalf("line %d = %s, want op %s", i, lines[i], op)
+		}
+	}
+	if !strings.Contains(lines[2], `"conn":"Office VPN"`) || !strings.Contains(lines[2], `"auto_detect":true`) {
+		t.Fatalf("set_conn args = %s, want conn and state", lines[2])
+	}
+}
