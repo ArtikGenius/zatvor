@@ -20,6 +20,7 @@ All notable changes to Zatvor are recorded here.
 - `e2e`: end-to-end tests over Reality+Vision, XHTTP and Hysteria2 with a real Xray.
 - `secretscan`: staged scan matches the full scan; fake test UUIDs allow-listed; `scripts/dev/enable-hooks.sh`.
 - ADRs 0010 and 0011; README "What Zatvor sends".
+- Final review fixes: no `Referer` on subscription redirects; provider `metrics` section removed with a warning; typed errors (`link.ErrMalformed`, `store.ErrWrongKey`/`ErrCorrupt`/`ErrFormat`/`ErrVersion`/`ErrKey`, `validate.SchemaError`/`XrayTestError`/`ErrXrayNotRun`, `xrayrun.Err*`); negated geo tags (`!geoip:cn`, `geoip:!cn`) and all geo rule fields collected; TCP HTTP header refused as unsupported; one bad JSON array element skipped instead of the whole body; `xrayrun.Stop` no longer orphans a newer Start; the key file is never half-written; store document v2 keeps the provider Happ profile once; README names the latency test URL.
 
 ### Stage 0c (prototypes)
 

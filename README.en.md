@@ -24,6 +24,8 @@ A request to a provider carries:
 
 Not sent: user name, computer name, installed programs, cookies. The request ignores the OS proxy settings and goes directly.
 
-If the server redirects to a different host, `x-hwid` and `x-device-*` are not forwarded. A redirect from https to http is refused.
+If the server redirects to a different host, `x-hwid` and `x-device-*` are not forwarded. No redirect carries a `Referer` header (it would hold the subscription URL and its token). A redirect from https to http is refused.
+
+Server latency test: only when you run it, Zatvor makes an HTTP GET to `https://www.gstatic.com/generate_204` through each tested server (via Xray, not directly from your address). The request carries nothing about you.
 
 Other network use: a verified download of Xray-core from the official GitHub releases (no data about you) and, from stage 1b, a connectivity check through the tunnel. Nothing about you is sent anywhere else.

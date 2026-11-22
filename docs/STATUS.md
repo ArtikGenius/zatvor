@@ -17,7 +17,8 @@ Plan of 0c: [docs/superpowers/plans/2026-11-19-stage-0c-prototypes.md](superpowe
 - `geo/merge`: merged geo files per tag set.
 - `validate`: schema check and `xray -test`, secrets scrubbed from messages.
 - `xrayrun`: supervised Xray runner and core latency test.
-- `e2e`: three real-Xray end-to-end tests plus a legacy-config test.
+- `e2e`: three real-Xray end-to-end tests plus a legacy-config test and an awkward-secret test.
+- Final review fix wave (2026-11-22): no `Referer` on redirects; provider `metrics` removed; typed errors in `link`, `store`, `validate` and `xrayrun`; negated geo tags; TCP HTTP header refused; bad JSON array elements skipped; generation-checked `Stop`; complete key file on first use; store document v2 (provider Happ profile stored once). Report: `.superpowers/sdd/2026-11-22-stage-1a-core-engine/final-fix-report.md`.
 
 CI evidence: run [45016047924](https://github.com/ArtikGenius/zatvor/actions/runs/45016047924) (commit 8d079b3, first all-green with the e2e tests) and run [45016399057](https://github.com/ArtikGenius/zatvor/actions/runs/45016399057) (commit 8528d14, latest at the time of writing).
 
@@ -74,17 +75,17 @@ Deferred minor review findings:
 - installer scripts: `install.ps1` hash-to-run TOCTOU (hold the handle); cofactored PowerShell vs cofactorless OpenSSL verification policy note; two untested rejection branches; `install.sh` trap for INT/TERM; exit code for a missing file.
 
 Deferred minor review findings from 1a:
-- link: `security=none` to a public host builds but Xray refuses at start; TCP `headerType=http` is dropped silently (should be unsupported); legacy base64 host unwrapping is duplicated; hy2 multi-port uses the first port without a note; pin list keeps empty segments and does no hex check.
+- link: `security=none` to a public host builds but Xray refuses at start; legacy base64 host unwrapping is duplicated; hy2 multi-port uses the first port without a note; pin list keeps empty segments and does no hex check.
 - ojson: doc comments and method order.
-- subbody: one bad element in a JSON array makes the whole body unknown; Clash bodies carry junk skipped entries; `#http://x` is read as an inline header; a few cases lack tests (headers-only body, base64 inline headers).
+- subbody: Clash bodies carry junk skipped entries; `#http://x` is read as an inline header; a few cases lack tests (headers-only body, base64 inline headers).
 - subhdr, hwid: fractional update interval accepted; `x-hwid-limit` merged into the limit-reached flag; missing tests for bad base64 title and over-256 cap.
 - happ: FakeDNS on with no proxy sites puts a catch-all fake server first (untested); small type-switch duplication; DNS default IPs are literals.
 - subfetch: no tests for a custom dialer, ignored env proxy, encrypted body or corrupt gzip; the 20 s default is not a named constant; the "failed" error drops the cause category (refused, DNS, TLS); some tests order by sleeps.
-- profile, store: provider Happ profile is stored once per profile and loses its pointer on load; stray temp cleanup is unsafe across two Store instances; duplicate JSON configs collapse silently; key file can be half-written on first use; one empty branch in Save; provider routing is returned as a shared pointer.
+- profile, store: stray temp cleanup is unsafe across two Store instances; duplicate JSON configs collapse silently; one empty branch in Save; provider routing is returned as a shared pointer.
 - gen: catch-all detection ignores `port: "0-65535"` and `network: "tcp"` forms; non-object provider routing is replaced instead of rejected; a provider inbound tagged `api`, `probe` or `devtools` matches our reserved inbound without a warning; presets emit no `dns` section (add in 1b if needed).
 - geo/merge: duplicate load closures; no directory fsync after renames; only the first missing tag is reported; an `@attr`-only tag is skipped silently; no rename-failure test. The two-rename window can leave a mixed pair after a crash: 1b merges into a fresh directory and swaps it.
-- validate: output buffer is unbounded before the 4 KB cap; the `xray -test` path is covered only under the `xrayint` tag; protocol maps need a drift check on every Xray pin bump (add to the pin-bump checklist); scrubbing also masks non-secret routing values such as `geosite:cn`; secrets shorter than 6 characters (REALITY shortId) are not masked; a message for invalid JSON is not scrubbed.
-- xrayrun: Stop's post-wait writes `running`/`cur` without a generation check (Stop racing a newer Start); backoff steps 16 s and 30 s are unreachable; `TestBackoffWindowSlides` asserts nothing (the spawn-failure hang was fixed in 8528d14); duplicated test helpers; a Stop error is ignored in Latency; latency fails for all outbounds when one is invalid (1b falls back to one run per outbound).
+- validate: output buffer is unbounded before the 4 KB cap; the real `xray -test` is covered only under the `xrayint` tag (its error paths have a fake-binary unit test); protocol maps need a drift check on every Xray pin bump (add to the pin-bump checklist); scrubbing also masks non-secret routing values such as `geosite:cn`; secrets shorter than 6 characters (REALITY shortId) are not masked; a message for invalid JSON is not scrubbed.
+- xrayrun: backoff steps 16 s and 30 s are unreachable; `TestBackoffWindowSlides` asserts nothing (the spawn-failure hang was fixed in 8528d14); duplicated test helpers; a Stop error is ignored in Latency; latency fails for all outbounds when one is invalid (1b falls back to one run per outbound).
 - Follow-ups promised by the README: 1b creates new subscriptions with `SendDevice=true` (ADR 0008; the code zero value is false, `internal/profile/profile.go:61`); 1c adds the "send device info" switch in subscription settings; 1b adds the connectivity check through the tunnel.
 - e2e: server rules are not strictly narrow (add a trailing block-all); one assertion depends on exact spacing; the log-ready check matches any " started"; port races; the access log is proof only on Windows and macOS.
 - secretscan fix: a mixed-case allow entry; `enable-hooks.sh` does not use `--local`; `TestRunStagedExitCode` does not cover the allow path.
