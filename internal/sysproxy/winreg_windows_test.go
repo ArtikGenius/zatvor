@@ -1,10 +1,14 @@
 package sysproxy
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // The structs must match the C layout WinINet and RAS read.
@@ -33,5 +37,32 @@ func TestSplitBypassRoundTrip(t *testing.T) {
 	}
 	if !slices.Equal(splitBypass("b;a"), []string{"b", "a"}) {
 		t.Fatal("order not kept")
+	}
+}
+
+// Item 11: only ERROR_INVALID_PARAMETER (WinINet without FLAGS_UI) falls
+// back to FLAGS; any other error is returned as it is.
+func TestFlagsUIFallback(t *testing.T) {
+	invalid := fmt.Errorf("InternetSetOptionW: %w", windows.ERROR_INVALID_PARAMETER)
+	denied := fmt.Errorf("InternetSetOptionW: %w", windows.ERROR_ACCESS_DENIED)
+	other := errors.New("fallback failed")
+	for _, tc := range []struct {
+		name          string
+		first, second error
+		want          error
+		fellBack      bool
+	}{
+		{"ok", nil, nil, nil, false},
+		{"invalid parameter", invalid, nil, nil, true},
+		{"invalid parameter, then an error", invalid, other, other, true},
+		{"access denied", denied, nil, denied, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fell := false
+			err := flagsUIFallback(func() error { return tc.first }, func() error { fell = true; return tc.second })
+			if err != tc.want || fell != tc.fellBack {
+				t.Fatalf("err = %v, fell back = %v; want %v, %v", err, fell, tc.want, tc.fellBack)
+			}
+		})
 	}
 }

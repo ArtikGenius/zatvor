@@ -145,6 +145,17 @@ func query(name string, opts []perConnOption) ([]string, error) {
 	return strs, nil
 }
 
+// flagsUIFallback runs withUI and, only when WinINet rejected FLAGS_UI as
+// an unknown option (ERROR_INVALID_PARAMETER), without. Any other error is
+// real (access denied, an unknown connection) and returned as it is.
+func flagsUIFallback(withUI, without func() error) error {
+	err := withUI()
+	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+		return without()
+	}
+	return err
+}
+
 // getConn reads the flags as the settings UI shows them (FLAGS_UI): after a
 // failed WPAD detection the plain FLAGS drop PROXY_TYPE_AUTO_DETECT while
 // the user's checkbox is still on, and journaling that would switch it off
@@ -158,13 +169,19 @@ func getConn(name string) (sysapi.ProxyState, error) {
 			{Option: perConnAutoconfigURL},
 		}
 	}
-	o := opts(perConnFlagsUI)
-	strs, err := query(name, o)
-	if err != nil {
+	var o []perConnOption
+	var strs []string
+	err := flagsUIFallback(func() (err error) {
+		o = opts(perConnFlagsUI)
+		strs, err = query(name, o)
+		return err
+	}, func() (err error) {
 		o = opts(perConnFlags)
-		if strs, err = query(name, o); err != nil {
-			return sysapi.ProxyState{}, err
-		}
+		strs, err = query(name, o)
+		return err
+	})
+	if err != nil {
+		return sysapi.ProxyState{}, err
 	}
 	flags := uint32(o[0].Value)
 	s := sysapi.ProxyState{
@@ -192,7 +209,8 @@ func queryFlags(name string, opt uint32) (uint32, error) {
 // in use. Without one the stored URL is left as it is, only disabled, so a
 // restore never loses a URL the user had switched off. The flags go to both
 // FLAGS and FLAGS_UI, so that the FLAGS_UI read in getConn sees what we
-// wrote; where WinINet rejects FLAGS_UI, the set is retried with FLAGS only.
+// wrote; where WinINet rejects FLAGS_UI (ERROR_INVALID_PARAMETER), the set
+// is retried with FLAGS only.
 func setConn(name string, s sysapi.ProxyState) error {
 	if err := procInternetSetOptionW.Find(); err != nil {
 		return err
@@ -238,10 +256,11 @@ func setConn(name string, s sysapi.ProxyState) error {
 		}
 		opts = append(opts, perConnOption{Option: perConnAutoconfigURL, Value: pac})
 	}
-	if err := setOptions(&pin, name, opts); err != nil {
-		if err = setOptions(&pin, name, opts[1:]); err != nil { // without FLAGS_UI
-			return err
-		}
+	if err := flagsUIFallback(
+		func() error { return setOptions(&pin, name, opts) },
+		func() error { return setOptions(&pin, name, opts[1:]) }, // without FLAGS_UI
+	); err != nil {
+		return err
 	}
 	for _, opt := range []uintptr{internetOptionSettingsChanged, internetOptionRefresh} {
 		if r, _, e := procInternetSetOptionW.Call(0, opt, 0, 0); r == 0 {

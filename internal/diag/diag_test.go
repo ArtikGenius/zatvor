@@ -272,3 +272,25 @@ func TestDiagLogTail(t *testing.T) {
 		t.Errorf("log tail has %d lines, %q .. %q; want %d lines 051..250", len(got), got[0], got[len(got)-1], diag.LogLines)
 	}
 }
+
+// Item 10: the query of a foreign PAC URL in a system proxy journal entry
+// is masked, like its user info.
+func TestDiagMasksPACQuery(t *testing.T) {
+	const pac = "http://pacuser:pacpass_REPLACE@pac.example/proxy.pac?token=PACQUERY_REPLACE&u=2#frag_REPLACE"
+	prev, _ := json.Marshal(map[string]any{"enabled": false, "pac_url": pac, "bypass": []string{"<local>"}})
+	journal := `{"id":"j1","kind":"sysproxy","target":"lan","prev":` + string(prev) + `,"applied":{"enabled":true,"server":"127.0.0.1:31001"},"at":"2026-11-22T10:00:00Z"}` + "\n" +
+		`{"id":"j2","kind":"sysproxy","target":"ras:Office","prev":{"pac_url":"http://pac.example/plain.pac"},"applied":{},"at":"2026-11-22T10:00:00Z"}` + "\n"
+	_, files := unzip(t, bundle(t, diag.Sources{Journal: []byte(journal)}))
+	got := files["journal.jsonl"]
+	for _, leak := range []string{"PACQUERY_REPLACE", "frag_REPLACE", "pacuser", "pacpass_REPLACE"} {
+		if bytes.Contains(got, []byte(leak)) {
+			t.Errorf("journal.jsonl holds %q:\n%s", leak, got)
+		}
+	}
+	for _, want := range []string{`"pac_url":"http://***@pac.example/proxy.pac?***"`, `"pac_url":"http://pac.example/plain.pac"`,
+		`"server":"127.0.0.1:31001"`, `"bypass":["\u003clocal\u003e"]`} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Errorf("journal.jsonl lacks %q:\n%s", want, got)
+		}
+	}
+}

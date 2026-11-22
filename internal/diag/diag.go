@@ -124,7 +124,7 @@ func render(src Sources) (map[string][]byte, error) {
 		}
 	}
 	files := map[string][]byte{
-		"journal.jsonl": redactDevTools(src.Journal),
+		"journal.jsonl": redactJournal(src.Journal),
 		"zatvord.log":   tail(src.DaemonLog, LogLines),
 		"xray.log":      []byte(src.XrayOutput),
 	}
@@ -140,6 +140,11 @@ func render(src Sources) (map[string][]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("diag: %s: %w", name, err)
 		}
+		if m, changed := maskPACQueries(b); changed {
+			if b, err = json.MarshalIndent(m, "", "  "); err != nil {
+				return nil, fmt.Errorf("diag: %s: %w", name, err)
+			}
+		}
 		files[name] = append(b, '\n')
 	}
 	return files, nil
@@ -153,11 +158,13 @@ var userinfoRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)(?:[^\s/@"\\]|\
 // redactUserinfo turns scheme://user:pass@host into scheme://***@host.
 func redactUserinfo(s string) string { return userinfoRe.ReplaceAllString(s, "${1}***@") }
 
-// redactDevTools replaces the values of the dev-tool entries' Prev and
+// redactJournal replaces the values of the dev-tool entries' Prev and
 // Applied with "***", keeping the key names: they are the user's own tool
-// settings (their proxy, maybe with credentials), not ours. A line that is
-// not a JSON object (a torn last line) becomes ***.
-func redactDevTools(journal []byte) []byte {
+// settings (their proxy, maybe with credentials), not ours. In every entry
+// the query and fragment of a pac_url (a foreign PAC URL can carry a token
+// there) become "?***". A line that is not a JSON object (a torn last
+// line) becomes ***.
+func redactJournal(journal []byte) []byte {
 	if len(journal) == 0 {
 		return journal
 	}
@@ -185,9 +192,51 @@ func redactDevTools(journal []byte) []byte {
 				body = []byte("***")
 			}
 		}
+		if m, changed := maskPACQueries(body); changed {
+			if b, err := json.Marshal(m); err == nil {
+				body = b
+			} else {
+				body = []byte("***")
+			}
+		}
 		out = append(append(out, body...), '\n')
 	}
 	return out
+}
+
+// maskPACQueries decodes raw and replaces the query and fragment of every
+// string under a "pac_url" key with "?***". It reports whether anything
+// changed; when nothing did, the caller keeps raw byte for byte.
+func maskPACQueries(raw []byte) (any, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if dec.Decode(&v) != nil {
+		return nil, false
+	}
+	changed := false
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, e := range x {
+				if s, ok := e.(string); ok && k == "pac_url" {
+					if i := strings.IndexAny(s, "?#"); i >= 0 {
+						x[k] = s[:i] + "?***"
+						changed = true
+					}
+					continue
+				}
+				walk(e)
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return v, changed
 }
 
 // maskValues is raw with every value that is not an object, a boolean or
