@@ -39,6 +39,24 @@ func TestJSONWithoutOutbounds(t *testing.T) {
 	}
 }
 
+// One bad element of a JSON array is skipped; the good configs stay.
+func TestJSONArrayBadElementSkipped(t *testing.T) {
+	body := `[{"remarks":"a","outbounds":[{"protocol":"freedom"}]}, 7, {"remarks":"no outbounds"}, {"remarks":"b","outbounds":[]}]`
+	r := Decode([]byte(body))
+	if r.Kind != XrayJSON || len(r.Configs) != 2 {
+		t.Fatalf("kind=%v configs=%d", r.Kind, len(r.Configs))
+	}
+	want := []Skip{{Element: 2, Reason: "not an object"}, {Element: 3, Reason: "no outbounds"}}
+	if fmt.Sprint(r.Skipped) != fmt.Sprint(want) {
+		t.Fatalf("skipped = %+v, want %+v", r.Skipped, want)
+	}
+	// Nothing usable: still not a subscription, with the reasons kept.
+	r = Decode([]byte(`[1, {"x":1}]`))
+	if r.Kind != Unknown || len(r.Skipped) != 2 {
+		t.Fatalf("all bad: kind=%v skipped=%+v", r.Kind, r.Skipped)
+	}
+}
+
 func TestBase64Variants(t *testing.T) {
 	plain := read(t, "links3.txt")
 	want := Decode(plain)

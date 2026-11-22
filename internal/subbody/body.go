@@ -24,12 +24,14 @@ const (
 	Empty
 )
 
-// Skip is one body line that did not become a node. Scheme is the text before
-// "://" when printable, never the line itself.
+// Skip is one body line that did not become a node, or one element of a JSON
+// array that did not become a config. Scheme is the text before "://" when
+// printable, never the line itself.
 type Skip struct {
-	Line   int
-	Scheme string
-	Reason string
+	Line    int // 1-based body line (link bodies)
+	Element int // 1-based array position (JSON array bodies)
+	Scheme  string
+	Reason  string
 }
 
 // Result is the outcome of Decode.
@@ -60,32 +62,37 @@ func Decode(body []byte) Result {
 	return decodeLines(text)
 }
 
+// decodeJSON reads one Xray config or an array of them. A bad array element
+// is skipped and recorded; a single object must be a config.
 func decodeJSON(body []byte) Result {
 	v, err := ojson.Parse(body)
 	if err != nil {
 		return Result{Kind: Unknown}
 	}
-	var items []any
-	if arr, ok := v.([]any); ok {
-		items = arr
-	} else {
-		items = []any{v}
-	}
-	var cfgs []*ojson.Object
-	for _, it := range items {
-		o, ok := it.(*ojson.Object)
-		if !ok {
-			return Result{Kind: Unknown}
-		}
+	if o, ok := v.(*ojson.Object); ok {
 		if _, has := o.Get("outbounds"); !has {
 			return Result{Kind: Unknown}
 		}
-		cfgs = append(cfgs, o)
+		return Result{Kind: XrayJSON, Configs: []*ojson.Object{o}}
 	}
-	if len(cfgs) == 0 {
-		return Result{Kind: Unknown}
+	arr, _ := v.([]any)
+	res := Result{Kind: Unknown}
+	for i, it := range arr {
+		o, ok := it.(*ojson.Object)
+		if !ok {
+			res.Skipped = append(res.Skipped, Skip{Element: i + 1, Reason: "not an object"})
+			continue
+		}
+		if _, has := o.Get("outbounds"); !has {
+			res.Skipped = append(res.Skipped, Skip{Element: i + 1, Reason: "no outbounds"})
+			continue
+		}
+		res.Configs = append(res.Configs, o)
 	}
-	return Result{Kind: XrayJSON, Configs: cfgs}
+	if len(res.Configs) > 0 {
+		res.Kind = XrayJSON
+	}
+	return res
 }
 
 // decodeBase64 tries the four base64 alphabets on the whitespace-stripped body
