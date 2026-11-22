@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -40,19 +41,36 @@ func (e *Engine) loop(s *session) {
 			arm(e.onRecheck(s))
 		case err := <-fetched:
 			fetched = nil
-			arm(e.switchGeo(s, err))
+			retry, again := e.switchGeo(s, err)
+			arm(retry)
+			if again {
+				fetched = make(chan error, 1)
+				fetched <- nil
+			}
 		}
 	}
 }
 
-// lock takes opMu and reports whether s is still the current session.
+// lock takes opMu and reports whether s is still the current session. It
+// gives the handler a fresh work context when the last one was
+// interrupted.
 func (e *Engine) lock(s *session) bool {
 	e.opMu.Lock()
 	if e.sess != s || s.ctx.Err() != nil {
 		e.opMu.Unlock()
 		return false
 	}
+	e.mu.Lock()
+	if s.work.Err() != nil {
+		s.work, s.workCancel = context.WithCancel(s.ctx)
+	}
+	e.mu.Unlock()
 	return true
+}
+
+// interruptWork cancels the slow step a handler is in. Call with mu held.
+func (s *session) interruptWork() {
+	s.workCancel()
 }
 
 // onRunnerEvent applies the fail policy. It reports whether a re-check
@@ -138,12 +156,14 @@ func (e *Engine) retryRevertLocked(s *session) []*Error {
 // tunnel and re-apply the system proxy without force. It reports whether a
 // re-check should be scheduled.
 func (e *Engine) recoverLocked(s *session) bool {
-	if err := e.d.Ready(s.in.Ports)(s.ctx); err != nil {
-		return s.ctx.Err() == nil
+	// An interrupted step changes nothing and is retried on the re-check
+	// timer.
+	if err := e.d.Ready(s.in.Ports)(s.work); err != nil {
+		return true
 	}
-	res := e.check(s.ctx, s.in)
-	if s.ctx.Err() != nil {
-		return false
+	res := e.check(s.work, s.in)
+	if s.work.Err() != nil {
+		return true
 	}
 	e.update(func(st *State) { st.Check = res })
 	if res.Status != OK {
@@ -220,32 +240,36 @@ func (e *Engine) pollDrift(s *session) {
 // set. If the new run fails to start (or its check fails), the bootstrap
 // config is restarted on its own set with a warning (spec §6.5 rollback).
 // The system proxy stays applied throughout. It reports whether a
-// re-check should be scheduled.
-func (e *Engine) switchGeo(s *session, fetchErr error) bool {
+// re-check should be scheduled, and whether the switch was interrupted
+// before it changed anything and should run again.
+func (e *Engine) switchGeo(s *session, fetchErr error) (retry, again bool) {
 	if !e.lock(s) {
-		return false
+		return false, false
 	}
 	defer e.opMu.Unlock()
 	if fetchErr != nil {
 		e.warn(profileError(WarnGeoFetchFailed, "cannot download the profile's geo files; staying on the bundled set", fetchErr, s.prof))
-		return false
+		return false, false
 	}
 	if !s.xrayUp || !s.applied {
 		e.warn(&Error{Code: WarnGeoSwitchFailed, Message: "the tunnel was down when the geo files arrived; staying on the bundled set"})
-		return false
+		return false, false
 	}
 	cfg, _, err := gen.Build(s.in)
 	if err != nil {
 		e.warn(profileError(WarnGeoSwitchFailed, "cannot build the profile's config", err, s.prof))
-		return false
+		return false, false
 	}
-	dir, perr := e.prepare(s.ctx, cfg, s.pg)
+	dir, perr := e.prepare(s.work, cfg, s.pg)
+	if perr != nil && s.work.Err() != nil {
+		return false, true
+	}
 	if perr != nil {
 		if perr.Code != CodeGeoMissingTag {
 			perr.Code = WarnGeoSwitchFailed
 		}
 		e.warn(perr)
-		return false
+		return false, false
 	}
 
 	oldCfg, oldDir := s.cfg, s.dir
@@ -262,17 +286,17 @@ func (e *Engine) switchGeo(s *session, fetchErr error) bool {
 		s.adopt(r)
 		s.cfg, s.dir, s.bootstrap = cfg, dir, false
 		e.update(func(st *State) { st.Check, st.GeoBootstrap = res, false })
-		return false
+		return false, false
 	}
 	if s.ctx.Err() != nil {
-		return false
+		return false, false
 	}
 
 	// Roll back to the bootstrap config on its own set.
 	r = e.d.NewRunner(oldDir)
 	if err := r.Start(s.ctx, oldCfg, e.d.Ready(s.in.Ports)); err != nil {
 		s.events = nil // no runner left to watch; the stopped one stays for teardown
-		return e.lostXrayLocked(s, newError(CodeXrayStartFailed, "Xray did not start again after a failed geo switch", err, oldCfg))
+		return e.lostXrayLocked(s, newError(CodeXrayStartFailed, "Xray did not start again after a failed geo switch", err, oldCfg)), false
 	}
 	s.adopt(r)
 	e.warn(newError(WarnGeoSwitchFailed, "the profile's geo set did not work; back on the bundled set", cause, cfg))
@@ -280,7 +304,7 @@ func (e *Engine) switchGeo(s *session, fetchErr error) bool {
 	e.update(func(st *State) { st.Check = res })
 	if res.Status != OK {
 		e.degradeLocked(s, checkError(res))
-		return true
+		return true, false
 	}
-	return false
+	return false, false
 }

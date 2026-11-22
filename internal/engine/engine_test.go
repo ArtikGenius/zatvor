@@ -1149,3 +1149,117 @@ func TestGeoFetchErrorHidesURL(t *testing.T) {
 		}
 	}
 }
+
+// TestCancelledConnectKeepsLiveSession: a Connect whose ctx is already
+// cancelled returns an error and leaves the live session alone; its loop
+// still handles a crash (proxy reverted).
+func TestCancelledConnectKeepsLiveSession(t *testing.T) {
+	g := newRig(t, nil)
+	if err := g.e.Connect(context.Background(), linkProfile(t)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := g.e.Connect(ctx, linkProfile(t)); err == nil || errCode(t, err) != "canceled" {
+		t.Fatalf("Connect = %v, want canceled", err)
+	}
+	if st := g.e.State(); st.Phase != engine.Connected || st.Err != nil {
+		t.Fatalf("state = %+v, want the live session's Connected", st)
+	}
+	if _, ok := g.e.ProbeDialer(); !ok {
+		t.Fatal("ProbeDialer gone")
+	}
+	g.w.runner(0).ev <- xrayrun.Event{Kind: xrayrun.Exited, Err: errors.New("crash")}
+	waitPhase(t, g.e, engine.Degraded)
+	if log := g.w.logCopy(); log[len(log)-1] != "revert" {
+		t.Fatalf("log = %q, want the crash revert", log)
+	}
+}
+
+// TestSupersededWhileWaiting: A holds opMu; B registers (superseding A)
+// and is held before opMu; C supersedes B and connects; only then does B
+// take opMu. B returns superseded and leaves C's Connected state alone.
+func TestSupersededWhileWaiting(t *testing.T) {
+	g := newRig(t, nil)
+	release, cDone := make(chan struct{}), make(chan struct{})
+	engine.SetBeforeOpLock(g.e, func(seq uint64) {
+		if seq == 2 {
+			<-cDone
+		}
+	})
+	var once sync.Once
+	g.w.onCheck = func(ctx context.Context) {
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			<-release // A keeps opMu until B and C are registered
+		}
+	}
+	errs := make([]chan error, 3)
+	for i := range errs {
+		errs[i] = make(chan error, 1)
+	}
+	go func() { errs[0] <- g.e.Connect(context.Background(), linkProfile(t)) }()
+	waitFor(t, "A in check", func() bool { return g.w.count("check") == 1 })
+	go func() { errs[1] <- g.e.Connect(context.Background(), linkProfile(t)) }()
+	waitFor(t, "B registered", func() bool { return engine.ConnSeq(g.e) == 2 })
+	go func() { errs[2] <- g.e.Connect(context.Background(), linkProfile(t)) }()
+	waitFor(t, "C registered", func() bool { return engine.ConnSeq(g.e) == 3 })
+	close(release)
+	if err := <-errs[0]; err == nil || errCode(t, err) != "superseded" {
+		t.Fatalf("A = %v, want superseded", err)
+	}
+	if err := <-errs[2]; err != nil {
+		t.Fatalf("C = %v", err)
+	}
+	close(cDone)
+	if err := <-errs[1]; err == nil || errCode(t, err) != "superseded" {
+		t.Fatalf("B = %v, want superseded", err)
+	}
+	st := g.e.State()
+	if st.Phase != engine.Connected || st.Err != nil {
+		t.Fatalf("final state = %+v, want C's Connected", st)
+	}
+	if _, ok := g.e.ProbeDialer(); !ok {
+		t.Fatal("ProbeDialer gone after C connected")
+	}
+	if n := g.w.count("apply"); n != 1 {
+		t.Fatalf("Apply ran %d times, want 1 (C)", n)
+	}
+}
+
+// TestInterruptedRecoveryRetries: a Connect interrupts a recovery check
+// and is then cancelled before it takes opMu. The recovery changes nothing,
+// the session keeps its loop, and the re-check timer finishes it.
+func TestInterruptedRecoveryRetries(t *testing.T) {
+	g := newRig(t, nil)
+	crash(t, g)
+	inCheck := make(chan struct{})
+	g.w.onCheck = func(ctx context.Context) {
+		close(inCheck)
+		<-ctx.Done() // interrupted by the Connect below
+		g.w.mu.Lock()
+		g.w.onCheck = nil
+		g.w.mu.Unlock()
+	}
+	bctx, cancel := context.WithCancel(context.Background())
+	engine.SetBeforeOpLock(g.e, func(seq uint64) {
+		if seq == 2 {
+			cancel() // B gives up before it takes opMu
+		}
+	})
+	g.w.runner(0).ev <- xrayrun.Event{Kind: xrayrun.Started}
+	<-inCheck
+	if err := g.e.Connect(bctx, linkProfile(t)); err == nil || errCode(t, err) != "canceled" {
+		t.Fatalf("B = %v, want canceled", err)
+	}
+	if st := g.e.State(); st.Phase != engine.Degraded {
+		t.Fatalf("state = %+v", st)
+	}
+	waitFor(t, "recheck timer", func() bool { return g.clk.pending() >= 2 })
+	g.clk.Advance(10 * time.Second)
+	waitPhase(t, g.e, engine.Connected)
+	if n := g.w.count("apply"); n != 2 {
+		t.Fatalf("Apply ran %d times, want 2", n)
+	}
+}

@@ -171,14 +171,24 @@ type Engine struct {
 	netGen     uint64
 	connSeq    uint64
 	connCancel context.CancelCauseFunc
+
+	// beforeOpLock is a test hook run by connect between registering
+	// (number seq) and taking opMu.
+	beforeOpLock func(seq uint64)
 }
 
 // session is one connected profile. Its fields are guarded by opMu;
 // xrayUp is also written under mu (ProbeDialer reads it).
 type session struct {
-	ctx    context.Context
+	ctx    context.Context // the loop's lifetime; cancelled by teardown and Disconnect
 	cancel context.CancelFunc
 	done   chan struct{} // closed when the loop has ended
+
+	// work bounds the slow steps of one handler. A Connect waiting for
+	// opMu cancels it (interruptWork, under mu); lock renews it. It is
+	// always a child of ctx.
+	work       context.Context
+	workCancel context.CancelFunc
 
 	prof      profile.Profile
 	in        gen.Input // the profile's own build input (no bootstrap)
@@ -335,11 +345,16 @@ func (e *Engine) connect(ctx context.Context, p profile.Profile, force bool) err
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	e.mu.Lock()
-	if e.connCancel != nil {
-		e.connCancel(errSuperseded) // an older connect still in flight
-	}
-	if e.sess != nil {
-		e.sess.cancel() // stop its slow work so opMu comes free
+	if ctx.Err() == nil {
+		if e.connCancel != nil {
+			e.connCancel(errSuperseded) // an older connect still in flight
+		}
+		if e.sess != nil {
+			// Interrupt only its slow work (a recovery check, a geo
+			// prepare) so opMu comes free; its loop keeps running until
+			// this connect really replaces it.
+			e.sess.interruptWork()
+		}
 	}
 	e.connSeq++
 	seq := e.connSeq
@@ -353,12 +368,15 @@ func (e *Engine) connect(ctx context.Context, p profile.Profile, force bool) err
 		e.mu.Unlock()
 	}()
 
+	if e.beforeOpLock != nil {
+		e.beforeOpLock(seq)
+	}
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
 	if ctx.Err() != nil {
-		err := abortError(ctx)
-		e.update(func(s *State) { s.Phase, s.Err = Failed, err })
-		return err
+		// Aborted before it began: a newer operation may already own the
+		// state and the session, so touch neither.
+		return abortError(ctx)
 	}
 	warns, rerr := e.teardownLocked()
 	if rerr != nil {
@@ -465,7 +483,9 @@ func (e *Engine) establish(ctx context.Context, p profile.Profile, force bool) (
 		return nil, newError(CodeProxyApplyFailed, "cannot set the system proxy", err, nil)
 	}
 	sctx, scancel := context.WithCancel(context.Background())
+	work, workCancel := context.WithCancel(sctx)
 	s := &session{ctx: sctx, cancel: scancel, done: make(chan struct{}),
+		work: work, workCancel: workCancel,
 		prof: p, in: in, pg: pg, cfg: cfg, dir: dir,
 		bootstrap: boot, xrayUp: true, applied: true}
 	s.adopt(r)
