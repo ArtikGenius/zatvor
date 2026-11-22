@@ -15,7 +15,7 @@ import (
 func (e *Engine) loop(s *session) {
 	defer close(s.done)
 	drift := e.d.Clock.After(driftInterval)
-	var recheck <-chan time.Time
+	var recheck, switchAgain <-chan time.Time
 	var fetched chan error
 	if s.bootstrap {
 		fetched = make(chan error, 1)
@@ -43,9 +43,15 @@ func (e *Engine) loop(s *session) {
 			fetched = nil
 			retry, again := e.switchGeo(s, err)
 			arm(retry)
+			if again { // interrupted by a connect: try again shortly
+				switchAgain = e.d.Clock.After(switchRetry)
+			}
+		case <-switchAgain:
+			switchAgain = nil
+			retry, again := e.switchGeo(s, nil)
+			arm(retry)
 			if again {
-				fetched = make(chan error, 1)
-				fetched <- nil
+				switchAgain = e.d.Clock.After(switchRetry)
 			}
 		}
 	}
@@ -53,7 +59,8 @@ func (e *Engine) loop(s *session) {
 
 // lock takes opMu and reports whether s is still the current session. It
 // gives the handler a fresh work context when the last one was
-// interrupted.
+// interrupted, unless a connect is still waiting for opMu: then the work
+// stays cancelled, so slow steps return at once and let that connect in.
 func (e *Engine) lock(s *session) bool {
 	e.opMu.Lock()
 	if e.sess != s || s.ctx.Err() != nil {
@@ -61,7 +68,7 @@ func (e *Engine) lock(s *session) bool {
 		return false
 	}
 	e.mu.Lock()
-	if s.work.Err() != nil {
+	if s.work.Err() != nil && e.pendingConnects == 0 {
 		s.work, s.workCancel = context.WithCancel(s.ctx)
 	}
 	e.mu.Unlock()
@@ -158,6 +165,9 @@ func (e *Engine) retryRevertLocked(s *session) []*Error {
 func (e *Engine) recoverLocked(s *session) bool {
 	// An interrupted step changes nothing and is retried on the re-check
 	// timer.
+	if s.work.Err() != nil {
+		return true
+	}
 	if err := e.d.Ready(s.in.Ports)(s.work); err != nil {
 		return true
 	}
@@ -259,6 +269,9 @@ func (e *Engine) switchGeo(s *session, fetchErr error) (retry, again bool) {
 	if err != nil {
 		e.warn(profileError(WarnGeoSwitchFailed, "cannot build the profile's config", err, s.prof))
 		return false, false
+	}
+	if s.work.Err() != nil {
+		return false, true
 	}
 	dir, perr := e.prepare(s.work, cfg, s.pg)
 	if perr != nil && s.work.Err() != nil {

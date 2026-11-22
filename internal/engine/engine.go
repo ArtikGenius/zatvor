@@ -39,6 +39,7 @@ const (
 	stopTimeout     = 5 * time.Second
 	driftInterval   = 5 * time.Second
 	recheckInterval = 10 * time.Second
+	switchRetry     = time.Second // an interrupted geo switch runs again
 )
 
 // Runner supervises one Xray process; *xrayrun.Runner implements it. After
@@ -171,6 +172,9 @@ type Engine struct {
 	netGen     uint64
 	connSeq    uint64
 	connCancel context.CancelCauseFunc
+	// pendingConnects counts connects registered but not yet holding
+	// opMu; while it is non-zero an interrupted work ctx stays cancelled.
+	pendingConnects int
 
 	// beforeOpLock is a test hook run by connect between registering
 	// (number seq) and taking opMu.
@@ -342,23 +346,27 @@ func abortError(ctx context.Context) *Error {
 }
 
 func (e *Engine) connect(ctx context.Context, p profile.Profile, force bool) error {
+	if ctx.Err() != nil {
+		// Dead on arrival: never registers, so it supersedes nothing and
+		// leaves the connect in flight reachable by Disconnect.
+		return abortError(ctx)
+	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	e.mu.Lock()
-	if ctx.Err() == nil {
-		if e.connCancel != nil {
-			e.connCancel(errSuperseded) // an older connect still in flight
-		}
-		if e.sess != nil {
-			// Interrupt only its slow work (a recovery check, a geo
-			// prepare) so opMu comes free; its loop keeps running until
-			// this connect really replaces it.
-			e.sess.interruptWork()
-		}
+	if e.connCancel != nil {
+		e.connCancel(errSuperseded) // an older connect still in flight
+	}
+	if e.sess != nil {
+		// Interrupt only its slow work (a recovery check, a geo prepare)
+		// so opMu comes free; its loop keeps running until this connect
+		// really replaces it.
+		e.sess.interruptWork()
 	}
 	e.connSeq++
 	seq := e.connSeq
 	e.connCancel = cancel
+	e.pendingConnects++
 	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
@@ -373,6 +381,9 @@ func (e *Engine) connect(ctx context.Context, p profile.Profile, force bool) err
 	}
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
+	e.mu.Lock()
+	e.pendingConnects--
+	e.mu.Unlock()
 	if ctx.Err() != nil {
 		// Aborted before it began: a newer operation may already own the
 		// state and the session, so touch neither.

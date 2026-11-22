@@ -1263,3 +1263,105 @@ func TestInterruptedRecoveryRetries(t *testing.T) {
 		t.Fatalf("Apply ran %d times, want 2", n)
 	}
 }
+
+// TestPreCancelledConnectDoesNotDetach: while A is in flight, a Connect
+// with a dead ctx returns canceled without registering, so a Disconnect
+// still cancels A promptly.
+func TestPreCancelledConnectDoesNotDetach(t *testing.T) {
+	g := newRig(t, nil)
+	inCheck, giveUp := make(chan struct{}), make(chan struct{})
+	g.w.onCheck = func(ctx context.Context) {
+		close(inCheck)
+		select { // only a cancel of A's own ctx ends this (giveUp: test failed)
+		case <-ctx.Done():
+		case <-giveUp:
+		}
+	}
+	aErr := make(chan error, 1)
+	go func() { aErr <- g.e.Connect(context.Background(), linkProfile(t)) }()
+	<-inCheck
+	defer func() {
+		select {
+		case <-giveUp:
+		default:
+			close(giveUp) // never leave A blocked
+		}
+	}()
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	bErr := make(chan error, 1)
+	go func() { bErr <- g.e.Connect(dead, linkProfile(t)) }()
+	select {
+	case err := <-bErr:
+		if err == nil || errCode(t, err) != "canceled" {
+			t.Fatalf("B = %v, want canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("pre-cancelled Connect blocked behind the connect in flight")
+	}
+	if engine.ConnSeq(g.e) != 1 {
+		t.Fatalf("B registered (ConnSeq %d)", engine.ConnSeq(g.e))
+	}
+	discDone := make(chan error, 1)
+	go func() { discDone <- g.e.Disconnect(context.Background()) }()
+	select {
+	case err := <-aErr:
+		if err == nil || errCode(t, err) != "canceled" {
+			t.Fatalf("A = %v, want canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Disconnect did not cancel the connect in flight")
+	}
+	if err := <-discDone; err != nil {
+		t.Fatal(err)
+	}
+	if st := g.e.State(); st.Phase != engine.Disconnected {
+		t.Fatalf("state = %+v", st)
+	}
+	if n := g.w.count("apply"); n != 0 {
+		t.Fatalf("Apply ran %d times", n)
+	}
+}
+
+// TestInterruptedWorkStaysCancelledWhileConnectWaits: B interrupted a
+// recovery check and waits before opMu. A re-check that wins opMu
+// meanwhile must not start a new check; it lets B in.
+func TestInterruptedWorkStaysCancelledWhileConnectWaits(t *testing.T) {
+	g := newRig(t, nil)
+	crash(t, g)
+	inCheck := make(chan struct{})
+	g.w.onCheck = func(ctx context.Context) {
+		close(inCheck)
+		<-ctx.Done()
+		g.w.mu.Lock()
+		g.w.onCheck = nil
+		g.w.mu.Unlock()
+	}
+	bWaiting, releaseB := make(chan struct{}), make(chan struct{})
+	engine.SetBeforeOpLock(g.e, func(seq uint64) {
+		if seq == 2 {
+			close(bWaiting)
+			<-releaseB
+		}
+	})
+	g.w.runner(0).ev <- xrayrun.Event{Kind: xrayrun.Started}
+	<-inCheck
+	bErr := make(chan error, 1)
+	go func() { bErr <- g.e.Connect(context.Background(), linkProfile(t)) }()
+	<-bWaiting
+	// The interrupted recovery arms the re-check; fire it while B waits.
+	waitFor(t, "recheck timer", func() bool { return g.clk.pending() >= 2 })
+	checks := g.w.count("check")
+	g.clk.Advance(10 * time.Second)
+	waitFor(t, "recheck handled", func() bool { return g.clk.pending() >= 2 })
+	if n := g.w.count("check"); n != checks {
+		t.Fatalf("re-check ran %d new checks while a connect waited", n-checks)
+	}
+	close(releaseB)
+	if err := <-bErr; err != nil {
+		t.Fatal(err)
+	}
+	if st := g.e.State(); st.Phase != engine.Connected {
+		t.Fatalf("state = %+v", st)
+	}
+}
