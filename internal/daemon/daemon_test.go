@@ -792,26 +792,37 @@ func (l *logBuffer) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l
 
 func TestSafeStartIgnoresLiveStore(t *testing.T) {
 	// R43: the modes keep separate stores; a safe start never reads or
-	// touches the live one (nor its key).
+	// touches the live one (nor its key). The proof is the store-open hook
+	// and the hashes and mtimes of the live files; making the live dir
+	// unreadable (non-root only) is a second line of defence.
 	r := newRig(t)
 	id := r.seed()
-	liveDir := filepath.Join(r.dirs.Data, StoreDir, "live")
+	storeRoot := filepath.Join(r.dirs.Data, StoreDir)
+	liveDir := filepath.Join(storeRoot, "live")
 	if err := os.MkdirAll(liveDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{filepath.Join(liveDir, "profiles.zst"), filepath.Join(r.dirs.Data, StoreDir, "live.key")} {
+	for _, f := range []string{filepath.Join(liveDir, "profiles.zst"), filepath.Join(storeRoot, "live.key")} {
 		if err := os.WriteFile(f, []byte("live data, not for safe mode"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
+	before := snapshot(t, storeRoot, filepath.Join(storeRoot, "safe"))
+
+	var mu sync.Mutex
+	var opened []string
+	r.opts.hooks.storeOpened = func(dir, key string) {
+		mu.Lock()
+		opened = append(opened, dir, key)
+		mu.Unlock()
+	}
 	if runtime.GOOS != "windows" {
-		// Any read of the live store would fail and be logged.
+		// A read of the live store would fail and be logged.
 		if err := os.Chmod(liveDir, 0); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { os.Chmod(liveDir, 0o700) })
 	}
-	before := snapshot(t, filepath.Join(r.dirs.Data, StoreDir), filepath.Join(r.dirs.Data, StoreDir, "safe"))
 	lb := &logBuffer{}
 	r.opts.Log = lb
 	run := r.start()
@@ -822,17 +833,26 @@ func TestSafeStartIgnoresLiveStore(t *testing.T) {
 	if err := run.stop(); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(liveDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	got := append([]string(nil), opened...)
+	mu.Unlock()
+	want := []string{filepath.Join(storeRoot, "safe"), filepath.Join(storeRoot, "safe.key")}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("stores opened = %v, want only %v", got, want)
+	}
 	if strings.Contains(lb.String(), "store:") {
 		t.Fatalf("the safe start touched a store it cannot read:\n%s", lb.String())
 	}
-	if runtime.GOOS != "windows" {
-		os.Chmod(liveDir, 0o700)
-	}
-	after := snapshot(t, filepath.Join(r.dirs.Data, StoreDir), filepath.Join(r.dirs.Data, StoreDir, "safe"))
-	if fmt.Sprint(after) != fmt.Sprint(before) {
+	if after := snapshot(t, storeRoot, filepath.Join(storeRoot, "safe")); fmt.Sprint(after) != fmt.Sprint(before) {
 		t.Fatalf("the live store changed:\n%v\n%v", before, after)
 	}
-	if _, err := os.Stat(filepath.Join(r.dirs.Data, StoreDir, "safe", "profiles.zst")); err != nil {
+	if _, err := os.Stat(filepath.Join(storeRoot, "safe", "profiles.zst")); err != nil {
 		t.Fatalf("the safe store is not in store/safe: %v", err)
 	}
 }

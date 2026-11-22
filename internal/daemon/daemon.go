@@ -106,7 +106,9 @@ type hooks struct {
 	started   func(addr string) // after the API started
 	// writeState replaces the dev-tool state-file write of the pump.
 	writeState func(path, v string) error
-	onShow     func()
+	// storeOpened is told the store directory and key file openStore uses.
+	storeOpened func(dir, key string)
+	onShow      func()
 }
 
 func (o *Options) defaults() {
@@ -505,7 +507,11 @@ func openStore(o Options, logf func(string, ...any)) (*store.Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("daemon: store key: %w", err)
 	}
-	s, err := store.Open(filepath.Join(o.Dirs.Data, StoreDir, o.Mode.String()), kp)
+	dir := filepath.Join(o.Dirs.Data, StoreDir, o.Mode.String())
+	if o.hooks != nil && o.hooks.storeOpened != nil {
+		o.hooks.storeOpened(dir, keyPath(o.Mode, o.Dirs))
+	}
+	s, err := store.Open(dir, kp)
 	if err != nil {
 		return nil, fmt.Errorf("daemon: open the store: %w", err)
 	}
