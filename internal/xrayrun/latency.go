@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -115,7 +116,7 @@ func measure(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 	r := New(xrayPath, assetDir, nil)
 	checks := make([]ReadyCheck, len(ports))
 	for i, p := range ports {
-		checks[i] = DialReady(fmt.Sprintf("127.0.0.1:%d", p))
+		checks[i] = socksReady(fmt.Sprintf("127.0.0.1:%d", p), user, pass)
 	}
 	ready := func(ctx context.Context) error {
 		for _, c := range checks {
@@ -141,6 +142,71 @@ func measure(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 	}
 	wg.Wait()
 	return res, nil
+}
+
+// socksAttemptTimeout bounds one socksReady attempt, so a foreign listener
+// that never answers cannot stall the polling.
+const socksAttemptTimeout = 500 * time.Millisecond
+
+// socksReady is a ReadyCheck that is satisfied only by our own SOCKS5
+// inbound: it must answer the greeting (05 01 02) with 05 02 and accept the
+// RFC 1929 credentials (01 00). A refused connection, another reply, EOF or
+// a short read means "not ready yet". Freed ports can be taken by foreign
+// listeners, so a plain connect is not proof that Xray is up.
+func socksReady(addr, user, pass string) ReadyCheck {
+	return func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, readyTimeout)
+		defer cancel()
+		for {
+			err := socksHandshake(ctx, addr, user, pass)
+			if err == nil {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("xray not ready at %s: %w", addr, err)
+			case <-time.After(readyInterval):
+			}
+		}
+	}
+}
+
+func socksHandshake(ctx context.Context, addr, user, pass string) error {
+	ctx, cancel := context.WithTimeout(ctx, socksAttemptTimeout)
+	defer cancel()
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	dl, _ := ctx.Deadline()
+	if err := c.SetDeadline(dl); err != nil {
+		return err
+	}
+	if _, err := c.Write([]byte{5, 1, 2}); err != nil {
+		return err
+	}
+	var rep [2]byte
+	if _, err := io.ReadFull(c, rep[:]); err != nil {
+		return err
+	}
+	if rep != [2]byte{5, 2} {
+		return errors.New("not a socks5 password-auth server")
+	}
+	req := append([]byte{1, byte(len(user))}, user...)
+	req = append(req, byte(len(pass)))
+	req = append(req, pass...)
+	if _, err := c.Write(req); err != nil {
+		return err
+	}
+	if _, err := io.ReadFull(c, rep[:]); err != nil {
+		return err
+	}
+	if rep != [2]byte{1, 0} {
+		return errors.New("socks5 credentials rejected")
+	}
+	return nil
 }
 
 func probe(ctx context.Context, socksAddr, user, pass, url string, timeout time.Duration) (time.Duration, error) {

@@ -3,6 +3,8 @@ package xrayrun
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,4 +80,102 @@ func TestLatencyFallbackOnlyForConfigFailures(t *testing.T) {
 			}
 		}
 	})
+}
+
+// fakeSocks serves one-shot connections with handler on a loopback port.
+func fakeSocks(t *testing.T, handler func(net.Conn)) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); handler(c) }()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestSocksReady(t *testing.T) {
+	const user, pass = "u1", "p1"
+	good := func(c net.Conn) {
+		b := make([]byte, 3)
+		if _, err := io.ReadFull(c, b); err != nil || string(b) != "\x05\x01\x02" {
+			return
+		}
+		c.Write([]byte{5, 2})
+		h := make([]byte, 2)
+		if _, err := io.ReadFull(c, h); err != nil {
+			return
+		}
+		rest := make([]byte, int(h[1])+1)
+		if _, err := io.ReadFull(c, rest); err != nil {
+			return
+		}
+		pl := make([]byte, rest[len(rest)-1])
+		if _, err := io.ReadFull(c, pl); err != nil {
+			return
+		}
+		if string(rest[:len(rest)-1]) == user && string(pl) == pass {
+			c.Write([]byte{1, 0})
+		} else {
+			c.Write([]byte{1, 1})
+		}
+	}
+
+	t.Run("real socks5 is ready", func(t *testing.T) {
+		if err := socksReady(fakeSocks(t, good), user, pass)(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("late listener is awaited", func(t *testing.T) {
+		ln, _ := net.Listen("tcp", "127.0.0.1:0")
+		addr := ln.Addr().String()
+		ln.Close()
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			l, err := net.Listen("tcp", addr)
+			if err != nil {
+				return
+			}
+			defer l.Close()
+			c, err := l.Accept()
+			if err == nil {
+				good(c)
+				c.Close()
+			}
+		}()
+		if err := socksReady(addr, user, pass)(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	foreign := map[string]func(net.Conn){
+		"garbage": func(c net.Conn) { c.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n")) },
+		"close":   func(c net.Conn) {},
+		"short":   func(c net.Conn) { c.Write([]byte{5}) },
+		"no-auth": func(c net.Conn) { c.Write([]byte{5, 0}) },
+		"bad-creds": func(c net.Conn) {
+			c.Write([]byte{5, 2})
+			io.Copy(io.Discard, io.LimitReader(c, 8))
+			c.Write([]byte{1, 1})
+		},
+		"silent-hang": func(c net.Conn) { io.Copy(io.Discard, c) },
+	}
+	for name, h := range foreign {
+		t.Run("foreign "+name, func(t *testing.T) {
+			addr := fakeSocks(t, h)
+			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+			defer cancel()
+			if err := socksReady(addr, user, pass)(ctx); err == nil {
+				t.Fatal("a foreign listener satisfied socksReady")
+			}
+		})
+	}
 }
