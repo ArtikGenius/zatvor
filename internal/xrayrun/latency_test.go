@@ -130,7 +130,7 @@ func TestSocksReady(t *testing.T) {
 	}
 
 	t.Run("real socks5 is ready", func(t *testing.T) {
-		if err := socksReady(fakeSocks(t, good), user, pass)(context.Background()); err != nil {
+		if err := SOCKSReady(fakeSocks(t, good), user, pass)(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -151,7 +151,7 @@ func TestSocksReady(t *testing.T) {
 				c.Close()
 			}
 		}()
-		if err := socksReady(addr, user, pass)(context.Background()); err != nil {
+		if err := SOCKSReady(addr, user, pass)(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -173,8 +173,40 @@ func TestSocksReady(t *testing.T) {
 			addr := fakeSocks(t, h)
 			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 			defer cancel()
-			if err := socksReady(addr, user, pass)(ctx); err == nil {
-				t.Fatal("a foreign listener satisfied socksReady")
+			if err := SOCKSReady(addr, user, pass)(ctx); err == nil {
+				t.Fatal("a foreign listener satisfied SOCKSReady")
+			}
+		})
+	}
+}
+
+// An empty user makes SOCKSReady expect a no-auth SOCKS5 inbound, like the
+// mixed inbound: 05 01 00 must be answered with 05 00.
+func TestSOCKSReadyNoAuth(t *testing.T) {
+	good := func(c net.Conn) {
+		b := make([]byte, 3)
+		if _, err := io.ReadFull(c, b); err != nil || string(b) != "\x05\x01\x00" {
+			return
+		}
+		c.Write([]byte{5, 0})
+	}
+	if err := SOCKSReady(fakeSocks(t, good), "", "")(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	foreign := map[string]func(net.Conn){
+		"garbage":       func(c net.Conn) { c.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n")) },
+		"close":         func(c net.Conn) {},
+		"short":         func(c net.Conn) { c.Write([]byte{5}) },
+		"password-only": func(c net.Conn) { c.Write([]byte{5, 0xff}) },
+		"silent-hang":   func(c net.Conn) { io.Copy(io.Discard, c) },
+	}
+	for name, h := range foreign {
+		t.Run("foreign "+name, func(t *testing.T) {
+			addr := fakeSocks(t, h)
+			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+			defer cancel()
+			if err := SOCKSReady(addr, "", "")(ctx); err == nil {
+				t.Fatal("a foreign listener satisfied SOCKSReady")
 			}
 		})
 	}

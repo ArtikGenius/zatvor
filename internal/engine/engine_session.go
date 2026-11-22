@@ -11,7 +11,8 @@ import (
 )
 
 // loop watches one session: Xray events, the drift poll, re-checks after
-// a failed recovery, and the geo bootstrap download.
+// a failed recovery (with a growing interval), and the geo bootstrap
+// download.
 func (e *Engine) loop(s *session) {
 	defer close(s.done)
 	drift := e.d.Clock.After(driftInterval)
@@ -22,9 +23,22 @@ func (e *Engine) loop(s *session) {
 		dial := socksDialer(s.in.Ports.Probe, s.in.ProbeUser, s.in.ProbePass)
 		go func() { fetched <- e.d.Assets.Fetch(s.ctx, *s.pg, dial) }()
 	}
+	// The re-check backs off 10 s, 20 s, 40 s... up to recheckMax while
+	// recovery keeps failing; once the session is Connected again the next
+	// failure starts at 10 s. A new connect starts a new loop. A failed
+	// revert is retried every 10 s: until it succeeds the system proxy
+	// points at a dead port.
+	delay := recheckInterval
 	arm := func(retry bool) {
-		if retry {
+		revertPending, connected := e.recheckState(s)
+		switch {
+		case retry && revertPending:
 			recheck = e.d.Clock.After(recheckInterval)
+		case retry:
+			recheck = e.d.Clock.After(delay)
+			delay = min(2*delay, recheckMax)
+		case connected:
+			delay = recheckInterval
 		}
 	}
 	for {
@@ -55,6 +69,20 @@ func (e *Engine) loop(s *session) {
 			}
 		}
 	}
+}
+
+// recheckState reports whether a revert of s is pending, and whether s is
+// the current session in phase Connected.
+func (e *Engine) recheckState(s *session) (revertPending, connected bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return s.revertPending, e.sess == s && e.st.Phase == Connected
+}
+
+func (e *Engine) setRevertPending(s *session, v bool) {
+	e.mu.Lock()
+	s.revertPending = v
+	e.mu.Unlock()
 }
 
 // lock takes opMu and reports whether s is still the current session. It
@@ -151,7 +179,7 @@ func (e *Engine) degradeLocked(s *session, why *Error) bool {
 func (e *Engine) retryRevertLocked(s *session) []*Error {
 	warns, rerr := e.revertLocked()
 	s.applied = false
-	s.revertPending = rerr != nil
+	e.setRevertPending(s, rerr != nil)
 	if rerr != nil {
 		return append(warns, rerr)
 	}
@@ -168,7 +196,7 @@ func (e *Engine) recoverLocked(s *session) bool {
 	if s.work.Err() != nil {
 		return true
 	}
-	if err := e.d.Ready(s.in.Ports)(s.work); err != nil {
+	if err := e.d.Ready(s.in)(s.work); err != nil {
 		return true
 	}
 	res := e.check(s.work, s.in)
@@ -190,7 +218,8 @@ func (e *Engine) recoverLocked(s *session) bool {
 		e.degradeLocked(s, newError(CodeProxyApplyFailed, "cannot set the system proxy", err, nil))
 		return true
 	}
-	s.applied, s.revertPending = true, false
+	s.applied = true
+	e.setRevertPending(s, false)
 	e.update(func(st *State) {
 		st.Phase, st.Err = Connected, nil
 		st.unwarn(CodeProxyConflict)
@@ -290,7 +319,7 @@ func (e *Engine) switchGeo(s *session, fetchErr error) (retry, again bool) {
 	e.bumpGen()
 	var cause error
 	r := e.newRunner(dir)
-	if err := r.Start(s.ctx, cfg, e.d.Ready(s.in.Ports)); err != nil {
+	if err := r.Start(s.ctx, cfg, e.d.Ready(s.in)); err != nil {
 		cause = err
 	} else if res := e.check(s.ctx, s.in); res.Status != OK {
 		_ = r.Stop(stopTimeout)
@@ -307,7 +336,7 @@ func (e *Engine) switchGeo(s *session, fetchErr error) (retry, again bool) {
 
 	// Roll back to the bootstrap config on its own set.
 	r = e.newRunner(oldDir)
-	if err := r.Start(s.ctx, oldCfg, e.d.Ready(s.in.Ports)); err != nil {
+	if err := r.Start(s.ctx, oldCfg, e.d.Ready(s.in)); err != nil {
 		s.events = nil // no runner left to watch; the stopped one stays for teardown
 		return e.lostXrayLocked(s, newError(CodeXrayStartFailed, "Xray did not start again after a failed geo switch", err, oldCfg)), false
 	}

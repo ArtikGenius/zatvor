@@ -116,7 +116,7 @@ func measure(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 	r := New(xrayPath, assetDir, nil)
 	checks := make([]ReadyCheck, len(ports))
 	for i, p := range ports {
-		checks[i] = socksReady(fmt.Sprintf("127.0.0.1:%d", p), user, pass)
+		checks[i] = SOCKSReady(fmt.Sprintf("127.0.0.1:%d", p), user, pass)
 	}
 	ready := func(ctx context.Context) error {
 		for _, c := range checks {
@@ -144,16 +144,19 @@ func measure(ctx context.Context, xrayPath, assetDir string, outbounds []*ojson.
 	return res, nil
 }
 
-// socksAttemptTimeout bounds one socksReady attempt, so a foreign listener
+// socksAttemptTimeout bounds one SOCKSReady attempt, so a foreign listener
 // that never answers cannot stall the polling.
 const socksAttemptTimeout = 500 * time.Millisecond
 
-// socksReady is a ReadyCheck that is satisfied only by our own SOCKS5
-// inbound: it must answer the greeting (05 01 02) with 05 02 and accept the
-// RFC 1929 credentials (01 00). A refused connection, another reply, EOF or
-// a short read means "not ready yet". Freed ports can be taken by foreign
-// listeners, so a plain connect is not proof that Xray is up.
-func socksReady(addr, user, pass string) ReadyCheck {
+// SOCKSReady is a ReadyCheck that is satisfied only by our own SOCKS5
+// inbound at addr, for at most 10 seconds. With a user, the inbound must
+// answer the greeting 05 01 02 with 05 02 and accept the RFC 1929
+// credentials (01 00). With an empty user it must be a no-auth inbound (such
+// as the mixed one): 05 01 00 answered with 05 00. A refused connection,
+// another reply, EOF or a short read means "not ready yet". Freed ports can
+// be taken by foreign listeners, so a plain connect is not proof that Xray
+// is up.
+func SOCKSReady(addr, user, pass string) ReadyCheck {
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, readyTimeout)
 		defer cancel()
@@ -184,15 +187,22 @@ func socksHandshake(ctx context.Context, addr, user, pass string) error {
 	if err := c.SetDeadline(dl); err != nil {
 		return err
 	}
-	if _, err := c.Write([]byte{5, 1, 2}); err != nil {
+	method := byte(2) // username/password
+	if user == "" {
+		method = 0 // no authentication
+	}
+	if _, err := c.Write([]byte{5, 1, method}); err != nil {
 		return err
 	}
 	var rep [2]byte
 	if _, err := io.ReadFull(c, rep[:]); err != nil {
 		return err
 	}
-	if rep != [2]byte{5, 2} {
-		return errors.New("not a socks5 password-auth server")
+	if rep != [2]byte{5, method} {
+		return errors.New("not a socks5 server with the expected auth method")
+	}
+	if user == "" {
+		return nil
 	}
 	req := append([]byte{1, byte(len(user))}, user...)
 	req = append(req, byte(len(pass)))

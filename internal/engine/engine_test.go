@@ -239,6 +239,18 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 
 func (c *fakeClock) pending() int { c.mu.Lock(); defer c.mu.Unlock(); return len(c.waiters) }
 
+// waitsFor reports whether a timer is set to fire d from now.
+func (c *fakeClock) waitsFor(d time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, w := range c.waiters {
+		if w.at.Equal(c.now.Add(d)) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -292,7 +304,7 @@ func newRig(t *testing.T, edit func(*engine.Deps)) *rig {
 		},
 		Clock:   clk,
 		Checker: w.check,
-		Ready:   func(gen.Ports) xrayrun.ReadyCheck { return func(context.Context) error { return nil } },
+		Ready:   func(gen.Input) xrayrun.ReadyCheck { return func(context.Context) error { return nil } },
 	}
 	if edit != nil {
 		edit(&d)
@@ -1495,4 +1507,146 @@ func TestXrayOutputOfLastRun(t *testing.T) {
 	if out := newRig(t, nil).e.XrayOutput(); out != "" {
 		t.Errorf("XrayOutput of a runner without output = %q", out)
 	}
+}
+
+// readyRunner is a fake runner that, like xrayrun, waits for the ready
+// check in Start.
+type readyRunner struct{ ev chan xrayrun.Event }
+
+func (r *readyRunner) Start(ctx context.Context, cfg []byte, ready xrayrun.ReadyCheck) error {
+	return ready(ctx)
+}
+func (r *readyRunner) Stop(time.Duration) error     { return nil }
+func (r *readyRunner) Events() <-chan xrayrun.Event { return r.ev }
+
+// serveLoopback answers every connection on a fresh loopback port with h.
+func serveLoopback(t *testing.T, h func(net.Conn)) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); h(c) }()
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// socksNoAuth is the mixed inbound's greeting: 05 01 00 -> 05 00.
+func socksNoAuth(c net.Conn) {
+	b := make([]byte, 3)
+	if _, err := io.ReadFull(c, b); err == nil && string(b) == "\x05\x01\x00" {
+		c.Write([]byte{5, 0})
+	}
+}
+
+// socksPassword is the probe inbound: password auth, any credentials.
+func socksPassword(c net.Conn) {
+	b := make([]byte, 3)
+	if _, err := io.ReadFull(c, b); err != nil || string(b) != "\x05\x01\x02" {
+		return
+	}
+	c.Write([]byte{5, 2})
+	h := make([]byte, 2)
+	if _, err := io.ReadFull(c, h); err != nil {
+		return
+	}
+	u := make([]byte, int(h[1])+1)
+	if _, err := io.ReadFull(c, u); err != nil {
+		return
+	}
+	if _, err := io.ReadFull(c, make([]byte, u[len(u)-1])); err != nil {
+		return
+	}
+	c.Write([]byte{1, 0})
+}
+
+// FINAL #3: the default ready check speaks each inbound's protocol, so a
+// foreign listener on a freed port never counts as our Xray.
+func TestDefaultReadyRejectsForeignListener(t *testing.T) {
+	foreign := func(c net.Conn) { c.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n")) }
+	cases := []struct {
+		name      string
+		mixed     func(net.Conn)
+		probe     func(net.Conn)
+		connected bool
+	}{
+		{"ours", socksNoAuth, socksPassword, true},
+		{"foreign mixed", foreign, socksPassword, false},
+		{"password server on mixed", socksPassword, socksPassword, false},
+		{"foreign probe", socksNoAuth, foreign, false},
+		{"no-auth server on probe", socksNoAuth, socksNoAuth, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pp := gen.Ports{Mixed: serveLoopback(t, tc.mixed), Probe: serveLoopback(t, tc.probe), DevTools: 35201, API: 37301}
+			r := newRig(t, func(d *engine.Deps) {
+				d.Ready = nil // the production check
+				d.NewRunner = func(string) engine.Runner { return &readyRunner{ev: make(chan xrayrun.Event, 16)} }
+				d.Ports = func(gen.Ports) (gen.Ports, bool, error) { return pp, true, nil }
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+			defer cancel()
+			err := r.e.Connect(ctx, linkProfile(t))
+			if got := err == nil; got != tc.connected {
+				t.Fatalf("Connect = %v, want connected=%v", err, tc.connected)
+			}
+			if !tc.connected {
+				if st := r.e.State(); st.Phase == engine.Connected {
+					t.Fatal("phase Connected with a foreign listener")
+				}
+				if n := r.w.count("apply"); n != 0 {
+					t.Fatalf("system proxy applied %d times", n)
+				}
+			}
+		})
+	}
+}
+
+// Item 4: the re-check after a failed recovery backs off 10 s, 20 s, 40 s...
+// up to 5 minutes, and starts at 10 s again after a recovery succeeded.
+func TestRecheckBacksOff(t *testing.T) {
+	g := newRig(t, nil)
+	crash(t, g)
+	unknown := make([]engine.CheckResult, 20)
+	for i := range unknown {
+		unknown[i] = engine.CheckResult{Status: engine.Unknown}
+	}
+	g.w.mu.Lock()
+	g.w.checks = append([]engine.CheckResult(nil), unknown...)
+	g.w.mu.Unlock()
+	g.w.runner(0).ev <- xrayrun.Event{Kind: xrayrun.Started}
+	checks := 2 // connect + first recovery
+	waitFor(t, "first recovery check", func() bool { return g.w.count("check") == checks })
+	for _, d := range []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second,
+		160 * time.Second, 5 * time.Minute, 5 * time.Minute} {
+		waitFor(t, "re-check in "+d.String(), func() bool { return g.clk.waitsFor(d) })
+		g.clk.Advance(d)
+		checks++
+		waitFor(t, "re-check", func() bool { return g.w.count("check") == checks })
+	}
+	if st := g.e.State(); st.Phase != engine.Degraded {
+		t.Fatalf("state = %+v", st)
+	}
+	// success resets the backoff
+	g.w.mu.Lock()
+	g.w.checks = nil
+	g.w.mu.Unlock()
+	waitFor(t, "re-check in 5m", func() bool { return g.clk.waitsFor(5 * time.Minute) })
+	g.clk.Advance(5 * time.Minute)
+	waitPhase(t, g.e, engine.Connected)
+	g.w.mu.Lock()
+	g.w.checks = append([]engine.CheckResult(nil), unknown...)
+	g.w.mu.Unlock()
+	g.w.runner(0).ev <- xrayrun.Event{Kind: xrayrun.Exited, Err: errors.New("xrayrun: xray exited: exit status 2")}
+	waitPhase(t, g.e, engine.Degraded)
+	g.w.runner(0).ev <- xrayrun.Event{Kind: xrayrun.Started}
+	waitFor(t, "re-check in 10s after a success", func() bool { return g.clk.waitsFor(10 * time.Second) })
 }

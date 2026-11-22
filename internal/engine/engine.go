@@ -38,7 +38,8 @@ import (
 const (
 	stopTimeout     = 5 * time.Second
 	driftInterval   = 5 * time.Second
-	recheckInterval = 10 * time.Second
+	recheckInterval = 10 * time.Second // first re-check after a failed recovery
+	recheckMax      = 5 * time.Minute  // the re-check backoff doubles up to this
 	switchRetry     = time.Second // an interrupted geo switch runs again
 )
 
@@ -95,9 +96,11 @@ type Deps struct {
 	InitialPorts gen.Ports
 	// SavePorts persists re-picked ports (optional).
 	SavePorts func(gen.Ports) error
-	// Ready waits until Xray serves the given ports (default: dial the
-	// mixed and the probe inbound).
-	Ready func(gen.Ports) xrayrun.ReadyCheck
+	// Ready waits until Xray serves the inbounds of in (default: a no-auth
+	// SOCKS5 handshake on the mixed inbound, then a password one with the
+	// probe credentials on the probe inbound, so a foreign listener on a
+	// freed port never counts).
+	Ready func(in gen.Input) xrayrun.ReadyCheck
 	// Clock drives the drift poll and re-check timers (default wall clock).
 	Clock xrayrun.Clock
 	// Checker is the tunnel check (default TunnelCheck over
@@ -132,8 +135,9 @@ func (d *Deps) defaults() {
 		d.Ports = func(prev gen.Ports) (gen.Ports, bool, error) { return ports.Pick(prev, ports.LoopbackProber, rnd) }
 	}
 	if d.Ready == nil {
-		d.Ready = func(p gen.Ports) xrayrun.ReadyCheck {
-			mixed, probe := xrayrun.DialReady(loopback(p.Mixed)), xrayrun.DialReady(loopback(p.Probe))
+		d.Ready = func(in gen.Input) xrayrun.ReadyCheck {
+			mixed := xrayrun.SOCKSReady(loopback(in.Ports.Mixed), "", "")
+			probe := xrayrun.SOCKSReady(loopback(in.Ports.Probe), in.ProbeUser, in.ProbePass)
 			return func(ctx context.Context) error {
 				if err := mixed(ctx); err != nil {
 					return err
@@ -183,7 +187,8 @@ type Engine struct {
 }
 
 // session is one connected profile. Its fields are guarded by opMu;
-// xrayUp is also written under mu (ProbeDialer reads it).
+// xrayUp and revertPending are also written under mu (ProbeDialer and the
+// loop read them).
 type session struct {
 	ctx    context.Context // the loop's lifetime; cancelled by teardown and Disconnect
 	cancel context.CancelFunc
@@ -205,7 +210,8 @@ type session struct {
 	bootstrap bool                 // running the bootstrap config
 	xrayUp    bool                 // a started Xray is supposed to run
 	applied   bool                 // the system proxy is ours
-	// revertPending: a revert failed; the re-check timer retries it.
+	// revertPending: a revert failed; the re-check timer retries it at the
+	// base interval. Also written under mu (the loop reads it to arm).
 	revertPending bool
 }
 
@@ -487,7 +493,7 @@ func (e *Engine) establish(ctx context.Context, p profile.Profile, force bool) (
 		return nil, perr
 	}
 	r := e.newRunner(dir)
-	if err := r.Start(ctx, cfg, e.d.Ready(pp)); err != nil {
+	if err := r.Start(ctx, cfg, e.d.Ready(in)); err != nil {
 		return nil, newError(CodeXrayStartFailed, "Xray did not start", err, cfg)
 	}
 	e.bumpGen()
