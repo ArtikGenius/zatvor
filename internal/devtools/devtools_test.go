@@ -724,13 +724,25 @@ func TestWrapperFindsRealToolNotItself(t *testing.T) {
 			t.Errorf("%s without a real tool: err=%v out=%s", kind, err, out)
 		}
 
-		// R29: started from inside a wrapper → a clear error, exit 1.
-		nested := exec.Command(args[0], args[1:]...)
-		nested.Env = cleanEnv(path, "ZATVOR_WRAPPED=1")
-		out, err = nested.CombinedOutput()
-		var ee *exec.ExitError
-		if !errors.As(err, &ee) || ee.ExitCode() != 1 || !strings.Contains(string(out), "started itself") || strings.Contains(string(out), "real:") {
-			t.Errorf("%s with ZATVOR_WRAPPED set: err=%v out=%s", kind, err, out)
+		// R32: ZATVOR_WRAPPED is a depth counter. A tool running itself
+		// again through PATH works; depth 8 is refused as self-recursion.
+		for _, c := range []struct {
+			in, child string // "" child: refused
+		}{{"7", "8"}, {"007", "8"}, {"abc", "1"}, {"", "1"}, {"8", ""}, {"12", ""}, {"123456789012", ""}} {
+			nested := exec.Command(args[0], append(args[1:], "x")...)
+			nested.Env = cleanEnv(path, "ZATVOR_WRAPPED="+c.in)
+			out, err := nested.CombinedOutput()
+			if c.child != "" {
+				want := "real:" + testProxy + ":localhost,127.0.0.1,::1:" + c.child + ":x"
+				if err != nil || strings.TrimSpace(string(out)) != want {
+					t.Errorf("%s at depth %q: err=%v out=%q, want %q", kind, c.in, err, out, want)
+				}
+				continue
+			}
+			var ee *exec.ExitError
+			if !errors.As(err, &ee) || ee.ExitCode() != 1 || !strings.Contains(string(out), "starting itself") || strings.Contains(string(out), "real:") {
+				t.Errorf("%s at depth %q: err=%v out=%s, want a refusal", kind, c.in, err, out)
+			}
 		}
 	}
 

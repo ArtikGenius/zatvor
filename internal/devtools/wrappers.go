@@ -12,10 +12,12 @@ import (
 // (anything else counts as empty and is never parsed as code), and runs
 // the real tool: the first one on PATH outside the wrapper's own directory.
 // BinDir is skipped only for that lookup; the tool gets the PATH it was
-// given. ZATVOR_WRAPPED marks the child: a wrapper that finds it set has
-// started itself (BinDir on PATH under a name the lookup did not catch)
-// and stops with exit code 1 instead of recursing. The flip side: a tool
-// that starts itself again through a wrapper fails the same way.
+// given. ZATVOR_WRAPPED counts how deep wrappers are nested: each wrapper
+// reads it (empty or not a number = 0) and passes depth+1 to the tool, so a
+// tool that runs itself again through PATH keeps working. A wrapper that
+// receives depth 8 or more refuses with exit code 1: it is most likely
+// starting itself (BinDir on PATH under a name the lookup did not catch),
+// and this stops it well before cmd's batch stack overflows.
 
 var wrappedTools = []string{"codex", "gemini"}
 
@@ -56,7 +58,6 @@ rem Written by Zatvor and deleted when developer-tool routing is turned off.
 rem The PATH scan below does not handle entries holding a double quote, a
 rem percent sign, a caret or the wildcards * and ?: they are searched wrongly.
 setlocal DisableDelayedExpansion
-if defined ZATVOR_WRAPPED goto nested
 set "ZATVOR_PROXY="
 if exist "`+state+`" set /p ZATVOR_PROXY=<"`+state+`"
 rem The state line is only looked at through delayed expansion, which never
@@ -68,7 +69,19 @@ if defined ZATVOR_PORT if not "!ZATVOR_PORT:~5!"=="" set "ZATVOR_PORT="
 set "ZATVOR_REST=!ZATVOR_PORT!"
 for %%C in (0 1 2 3 4 5 6 7 8 9) do if defined ZATVOR_REST set "ZATVOR_REST=!ZATVOR_REST:%%C=!"
 if defined ZATVOR_REST set "ZATVOR_PORT="
-endlocal & set "ZATVOR_PORT=%ZATVOR_PORT%"
+rem The nesting depth, also read without parsing: digits only, else 0; three
+rem or more digits count as 99; leading zeros go so set /a reads decimal.
+set "ZATVOR_D="
+if defined ZATVOR_WRAPPED set "ZATVOR_D=!ZATVOR_WRAPPED!"
+set "ZATVOR_REST=!ZATVOR_D!"
+for %%C in (0 1 2 3 4 5 6 7 8 9) do if defined ZATVOR_REST set "ZATVOR_REST=!ZATVOR_REST:%%C=!"
+if defined ZATVOR_REST set "ZATVOR_D="
+if not defined ZATVOR_D set "ZATVOR_D=0"
+if not "!ZATVOR_D:~2!"=="" set "ZATVOR_D=99"
+for /f "tokens=* delims=0" %%N in ("!ZATVOR_D!") do set "ZATVOR_D=%%N"
+endlocal & set "ZATVOR_PORT=%ZATVOR_PORT%" & set "ZATVOR_DEPTH=%ZATVOR_D%"
+set /a ZATVOR_DEPTH=ZATVOR_DEPTH
+if %ZATVOR_DEPTH% GEQ 8 goto nested
 set "ZATVOR_PROXY="
 if defined ZATVOR_PORT set "HTTPS_PROXY=http://127.0.0.1:%ZATVOR_PORT%"
 if defined ZATVOR_PORT set "HTTP_PROXY=http://127.0.0.1:%ZATVOR_PORT%"
@@ -79,7 +92,8 @@ set "ZATVOR_REAL="
 for %%D in ("%PATH:;=" "%") do if not defined ZATVOR_REAL call :probe "%%~D"
 set "ZATVOR_SELF="
 if not defined ZATVOR_REAL goto notfound
-set "ZATVOR_WRAPPED=1"
+set /a ZATVOR_WRAPPED=ZATVOR_DEPTH+1
+set "ZATVOR_DEPTH="
 if /i "%ZATVOR_REAL:~-4%"==".cmd" goto batch
 if /i "%ZATVOR_REAL:~-4%"==".bat" goto batch
 "%ZATVOR_REAL%" %*
@@ -91,7 +105,7 @@ exit /b %ERRORLEVEL%
 >&2 echo zatvor: `+tool+` was not found on PATH outside %~dp0
 exit /b 9009
 :nested
->&2 echo zatvor: the `+tool+` wrapper started itself; check that its folder is not on PATH under another name
+>&2 echo zatvor: the `+tool+` wrapper is nested %ZATVOR_DEPTH% deep, so it is probably starting itself; check that its folder is not on PATH under another name
 exit /b 1
 :probe
 if "%~1"=="" exit /b 0
@@ -112,8 +126,11 @@ func ps1Wrapper(tool, binDir, stateFile string) string {
 	}
 	return strings.ReplaceAll(`# Zatvor wrapper for `+tool+`: routes it through Zatvor while Zatvor is connected.
 # Written by Zatvor and deleted when developer-tool routing is turned off.
-if ($env:ZATVOR_WRAPPED) {
-    [Console]::Error.WriteLine('zatvor: the `+tool+` wrapper started itself; check that its folder is not on PATH under another name')
+$zatvorDepth = 0
+if ("$env:ZATVOR_WRAPPED" -match '^0*([0-9]{1,9})$') { $zatvorDepth = [int]$Matches[1] }
+elseif ("$env:ZATVOR_WRAPPED" -match '^[0-9]+$') { $zatvorDepth = 99 }
+if ($zatvorDepth -ge 8) {
+    [Console]::Error.WriteLine("zatvor: the `+tool+` wrapper is nested $zatvorDepth deep, so it is probably starting itself; check that its folder is not on PATH under another name")
     exit 1
 }
 $zatvorState = `+state+`
@@ -150,7 +167,7 @@ try {
         $env:HTTP_PROXY = $zatvorProxy
         $env:NO_PROXY = '`+noProxy+`'
     }
-    $env:ZATVOR_WRAPPED = '1'
+    $env:ZATVOR_WRAPPED = [string]($zatvorDepth + 1)
     & $zatvorReal.Source @args
     $zatvorCode = $LASTEXITCODE
 } finally {
@@ -166,8 +183,14 @@ func shWrapper(tool, binDir, stateFile string) string {
 	return `#!/bin/sh
 # Zatvor wrapper for ` + tool + `: routes it through Zatvor while Zatvor is connected.
 # Written by Zatvor and deleted when developer-tool routing is turned off.
-if [ -n "${ZATVOR_WRAPPED-}" ]; then
-  echo "zatvor: the ` + tool + ` wrapper started itself; check that its folder is not on PATH under another name" >&2
+zatvor_depth=${ZATVOR_WRAPPED-}
+case $zatvor_depth in
+  ''|*[!0-9]*) zatvor_depth=0 ;;
+  *) zatvor_depth=${zatvor_depth#"${zatvor_depth%%[!0]*}"}; zatvor_depth=${zatvor_depth:-0} ;;
+esac
+case $zatvor_depth in ???*) zatvor_depth=99 ;; esac
+if [ "$zatvor_depth" -ge 8 ]; then
+  echo "zatvor: the ` + tool + ` wrapper is nested $zatvor_depth deep, so it is probably starting itself; check that its folder is not on PATH under another name" >&2
   exit 1
 fi
 zatvor_state=` + shQuote(posixPath(stateFile)) + `
@@ -204,7 +227,7 @@ if [ -z "$zatvor_real" ]; then
   echo "zatvor: ` + tool + ` was not found on PATH outside $zatvor_bin" >&2
   exit 127
 fi
-ZATVOR_WRAPPED=1
+ZATVOR_WRAPPED=$((zatvor_depth + 1))
 export ZATVOR_WRAPPED
 exec "$zatvor_real" "$@"
 `

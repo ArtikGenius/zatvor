@@ -1,7 +1,10 @@
 # Zatvor wrapper for codex: routes it through Zatvor while Zatvor is connected.
 # Written by Zatvor and deleted when developer-tool routing is turned off.
-if ($env:ZATVOR_WRAPPED) {
-    [Console]::Error.WriteLine('zatvor: the codex wrapper started itself; check that its folder is not on PATH under another name')
+$zatvorDepth = 0
+if ("$env:ZATVOR_WRAPPED" -match '^0*([0-9]{1,9})$') { $zatvorDepth = [int]$Matches[1] }
+elseif ("$env:ZATVOR_WRAPPED" -match '^[0-9]+$') { $zatvorDepth = 99 }
+if ($zatvorDepth -ge 8) {
+    [Console]::Error.WriteLine("zatvor: the codex wrapper is nested $zatvorDepth deep, so it is probably starting itself; check that its folder is not on PATH under another name")
     exit 1
 }
 $zatvorState = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', 'run', 'devtools.proxy'))
@@ -38,7 +41,7 @@ try {
         $env:HTTP_PROXY = $zatvorProxy
         $env:NO_PROXY = 'localhost,127.0.0.1,::1'
     }
-    $env:ZATVOR_WRAPPED = '1'
+    $env:ZATVOR_WRAPPED = [string]($zatvorDepth + 1)
     & $zatvorReal.Source @args
     $zatvorCode = $LASTEXITCODE
 } finally {
