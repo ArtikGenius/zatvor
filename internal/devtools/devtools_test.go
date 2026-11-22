@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -1187,14 +1188,44 @@ func TestSecondEnableChainsOwnBlock(t *testing.T) {
 	}
 }
 
-// cmd cannot run here; at least the depth is cleaned of leading zeros
-// before the three-digit cap, as in the sh and ps1 wrappers (007 → 7).
+// cmd cannot run here. The depth is cleaned in this order: an all-zero
+// value becomes 0 while it is defined, leading zeros go (007 → 7, and "0"
+// → nothing, so it is re-defined), then the three-digit cap.
 func TestCmdDepthStripsZerosBeforeCap(t *testing.T) {
-	w := cmdWrapper("codex", filepath.FromSlash("/z/bin"), filepath.FromSlash("/z/run/devtools.proxy"))
-	strip := strings.Index(w, `for /f "tokens=* delims=0"`)
-	zero := strings.Index(w, `if "!ZATVOR_D:0=!"=="" set "ZATVOR_D=0"`)
-	capAt := strings.Index(w, `set "ZATVOR_D=99"`)
-	if strip < 0 || zero < 0 || capAt < 0 || !(strip < zero && zero < capAt) {
-		t.Errorf("want strip zeros (%d), then all-zero → 0 (%d), then the cap (%d)", strip, zero, capAt)
+	w := strings.ReplaceAll(cmdWrapper("codex", filepath.FromSlash("/z/bin"), filepath.FromSlash("/z/run/devtools.proxy")), "\r\n", "\n")
+	want := `if not defined ZATVOR_D set "ZATVOR_D=0"
+if "!ZATVOR_D:0=!"=="" set "ZATVOR_D=0"
+for /f "tokens=* delims=0" %%N in ("!ZATVOR_D!") do set "ZATVOR_D=%%N"
+if not defined ZATVOR_D set "ZATVOR_D=0"
+if not "!ZATVOR_D:~2!"=="" set "ZATVOR_D=99"
+`
+	if !strings.Contains(w, want) {
+		t.Errorf("cmd wrapper lacks the depth sequence:\n%s", want)
+	}
+}
+
+// cmd expands !X:~n! and %X:a=b% of an undefined X to literal text. Every
+// such use must be guarded: "if defined X" earlier on the same line, the
+// line right after "if not defined X set", or after "if not defined X goto".
+func TestCmdNeverExpandsUndefinedWithModifiers(t *testing.T) {
+	use := regexp.MustCompile(`[!%]([A-Za-z_]+):`)
+	for _, tool := range wrappedTools {
+		lines := strings.Split(cmdWrapper(tool, filepath.FromSlash("/z/bin"), filepath.FromSlash("/z/run/devtools.proxy")), "\r\n")
+		for i, l := range lines {
+			for _, m := range use.FindAllStringSubmatchIndex(l, -1) {
+				v := l[m[2]:m[3]]
+				if v == "PATH" || strings.HasPrefix(l, "rem ") {
+					continue // PATH is always set; comments are not run
+				}
+				ok := strings.Contains(l[:m[0]], "if defined "+v+" ") ||
+					(i > 0 && strings.HasPrefix(lines[i-1], "if not defined "+v+" set "))
+				for _, prev := range lines[:i] {
+					ok = ok || strings.HasPrefix(prev, "if not defined "+v+" goto ")
+				}
+				if !ok {
+					t.Errorf("%s.cmd line %d expands %s with a modifier while it may be undefined: %s", tool, i+1, v, l)
+				}
+			}
+		}
 	}
 }
