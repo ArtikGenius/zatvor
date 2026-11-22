@@ -1,3 +1,5 @@
 # Made-up test key in an old commit (renamed and split later in a5b209d).
 # History is kept by Artur's decision, so this one historical finding is ignored.
 899aeb8ed9c24673f783212b214795f5c2b55a45:tools/secretscan/scan_test.go:generic-api-key:81
+# The hex alphabet in a token-format assertion (Task 10), not a key. Reworded in the next commit.
+4d515026076283bcabe7154ba0a591d41f0887a2:internal/api/api_test.go:generic-api-key:344

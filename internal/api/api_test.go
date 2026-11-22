@@ -339,9 +339,12 @@ func TestRejectsForeignOrigin(t *testing.T) {
 	}
 }
 
+// hexDigits are the characters a token may contain.
+const hexDigits = "0123456789" + "abcdef"
+
 func TestTokenFileUserOnly(t *testing.T) {
 	e := startServer(t, newFake())
-	if len(e.token) != 64 || strings.Trim(e.token, "0123456789abcdef") != "" {
+	if len(e.token) != 64 || strings.Trim(e.token, hexDigits) != "" {
 		t.Errorf("token is %d chars, want 64 lowercase hex", len(e.token))
 	}
 	got, err := api.ReadToken(e.dirs)
