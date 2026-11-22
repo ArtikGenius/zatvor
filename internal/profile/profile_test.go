@@ -239,3 +239,27 @@ func TestRoutingHeaderApplied(t *testing.T) {
 		t.Fatal("JSON profile must not use provider routing")
 	}
 }
+
+func TestRoutingHeaderDecodeErrorKeepsOld(t *testing.T) {
+	res := linksResult(node("a.example.com", 443, "A"))
+	res.Info = subhdr.Info{RoutingLink: routingLink(), RoutingEnabled: true}
+	good, _, err := Apply(baseSub(), res, t0)
+	if err != nil || good.ProviderRouting == nil {
+		t.Fatal("setup failed")
+	}
+	bad := res
+	bad.Info = subhdr.Info{RoutingLink: "happ://routing/onadd/!!!notbase64", RoutingEnabled: true}
+	got, _, err := Apply(good, bad, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProviderRouting == nil || got.ProviderRouting.Name != "Prov" {
+		t.Fatalf("undecodable header wiped routing: %+v", got.ProviderRouting)
+	}
+	absent := res
+	absent.Info = subhdr.Info{}
+	cleared, _, _ := Apply(good, absent, t0)
+	if cleared.ProviderRouting != nil {
+		t.Fatal("absent header must clear")
+	}
+}

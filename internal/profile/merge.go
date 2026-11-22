@@ -55,7 +55,7 @@ func Apply(old Subscription, res subfetch.Result, now time.Time) (Subscription, 
 	// The routing header applies to links only; JSON subscriptions keep the
 	// previous value untouched (spec 5.4 B4).
 	if len(res.Body.Nodes) > 0 {
-		sub.ProviderRouting = providerRouting(res)
+		sub.ProviderRouting = providerRouting(res, old.ProviderRouting)
 	}
 
 	var fresh []Profile
@@ -110,13 +110,15 @@ func Apply(old Subscription, res subfetch.Result, now time.Time) (Subscription, 
 	return sub, diff, nil
 }
 
-func providerRouting(res subfetch.Result) *happ.Profile {
+// providerRouting: an absent or disabled header clears the routing; a header
+// that fails to decode keeps the previous one.
+func providerRouting(res subfetch.Result, prev *happ.Profile) *happ.Profile {
 	if !res.Info.RoutingEnabled || res.Info.RoutingLink == "" {
 		return nil
 	}
 	p, err := happ.DecodeLink(res.Info.RoutingLink)
 	if err != nil {
-		return nil
+		return prev
 	}
 	return &p
 }

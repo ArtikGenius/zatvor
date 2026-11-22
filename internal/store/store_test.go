@@ -252,3 +252,41 @@ func TestOpenRemovesStrayTemps(t *testing.T) {
 		t.Fatal("unrelated file removed")
 	}
 }
+
+func TestSaveKeepsGoodBakWhenMainCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+	s := open(t, dir, keyFile)
+	first := sample(t)
+	if err := s.Save(first); err != nil {
+		t.Fatal(err)
+	}
+	second := sample(t)
+	second[0].Title = "second"
+	if err := s.Save(second); err != nil { // .bak now holds first
+		t.Fatal(err)
+	}
+	main := filepath.Join(dir, fileName)
+	b, _ := os.ReadFile(main)
+	b[len(b)-1] ^= 0xff
+	if err := os.WriteFile(main, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	third := sample(t)
+	third[0].Title = "third"
+	if err := s.Save(third); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Load(); err != nil || got[0].Title != "third" {
+		t.Fatalf("main = %v, %v", got, err)
+	}
+	dir2 := t.TempDir()
+	bak, _ := os.ReadFile(filepath.Join(dir, fileName+".bak"))
+	k, _ := os.ReadFile(keyFile)
+	os.WriteFile(filepath.Join(dir2, fileName), bak, 0o600)
+	os.WriteFile(filepath.Join(dir2, "key"), k, 0o600)
+	got, err := open(t, dir2, filepath.Join(dir2, "key")).Load()
+	if err != nil || got[0].Title != "T" {
+		t.Fatalf(".bak lost the good backup: %v %v", got, err)
+	}
+}

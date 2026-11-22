@@ -4,8 +4,10 @@
 // File layout: "ZTVS", one version byte, a 12-byte random nonce, then the
 // AES-256-GCM ciphertext of the JSON document. The header and nonce are
 // authenticated as additional data. Save writes a temp file in the same
-// directory, fsyncs it, renames the current file to ".bak" and renames the
-// temp file into place. Load never writes anything.
+// directory, fsyncs it and renames it over the main file; the main file is
+// never moved. Before that, the current main file is copied to ".bak" only if
+// it decrypts with the store's key, so a bad main file never replaces a good
+// backup. Load never writes anything; callers should Load before Save.
 package store
 
 import (
@@ -117,7 +119,10 @@ func (s *Store) Load() ([]profile.Subscription, error) {
 	return doc.Subscriptions, nil
 }
 
-// Save replaces the store atomically, keeping the previous file as ".bak".
+// Save replaces the store atomically. The previous main file becomes ".bak"
+// only if it opens with this store's key; otherwise ".bak" is left as it is
+// and the new data is still written. Callers should Load first, so a wrong key
+// or damaged file is noticed before it is overwritten.
 func (s *Store) Save(subs []profile.Subscription) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -141,7 +146,9 @@ func (s *Store) Save(subs []profile.Subscription) error {
 	// 1. Copy the current file to ".bak" (temp + fsync + rename); the main
 	// file is never moved, so it is present at every instant.
 	if old, err := os.ReadFile(s.path()); err == nil {
-		if err := s.writeAtomic(s.path()+".bak", old); err != nil {
+		if !s.opens(old) {
+			// keep the last good .bak
+		} else if err := s.writeAtomic(s.path()+".bak", old); err != nil {
 			return err
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -162,6 +169,16 @@ func (s *Store) Save(subs []profile.Subscription) error {
 		d.Close()
 	}
 	return nil
+}
+
+// opens reports whether data is a store file that decrypts and authenticates
+// with this store's key.
+func (s *Store) opens(data []byte) bool {
+	if len(data) < headerLen+nonceLen+s.aead.Overhead() || !bytes.Equal(data[:len(magic)], magic) || data[len(magic)] != formatVer {
+		return false
+	}
+	_, err := s.aead.Open(nil, data[headerLen:headerLen+nonceLen], data[headerLen+nonceLen:], data[:headerLen])
+	return err == nil
 }
 
 // writeAtomic writes data to a temp file in dir, fsyncs it and renames it over
