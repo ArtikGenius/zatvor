@@ -721,3 +721,114 @@ func TestIntervalDefaultsAndMinimum(t *testing.T) {
 		t.Fatal("did not run at 1 h")
 	}
 }
+
+// FINAL #1: a failed Start refresh backs off like a failed scheduled update;
+// it does not hold the scheduler for the whole interval.
+func TestFailedStartBacksOff(t *testing.T) {
+	p := newProvider(t, nodeA)
+	e := newEnv(t, nil)
+	sub := e.seed(t, p.URL+"/s", 24*time.Hour)
+	p.hits.Store(0)
+	p.status.Store(500)
+	ctx := context.Background()
+	if _, err := e.svc.Update(ctx, sub.ID, Start); err == nil {
+		t.Fatal("want failure")
+	}
+	if p.hits.Load() != 1 {
+		t.Fatalf("Start made %d requests", p.hits.Load())
+	}
+	// without the tunnel nothing is sent, however long we wait
+	e.clk.advance(2 * time.Minute)
+	e.svc.runDue(ctx)
+	if p.hits.Load() != 1 {
+		t.Fatalf("sent %d requests without a tunnel", p.hits.Load())
+	}
+	e.tun.up.Store(true)
+	e.tun.dial = (&net.Dialer{}).DialContext
+	e.svc.runDue(ctx)
+	if p.hits.Load() != 2 {
+		t.Fatalf("after the first backoff with the tunnel up: %d requests, want 2", p.hits.Load())
+	}
+	e.svc.runDue(ctx)
+	if p.hits.Load() != 2 {
+		t.Fatal("retried at once")
+	}
+	for i, delay := range []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute} {
+		before := p.hits.Load()
+		e.clk.advance(delay - time.Second)
+		e.svc.runDue(ctx)
+		if p.hits.Load() != before {
+			t.Fatalf("step %d: retried before %s", i, delay)
+		}
+		e.clk.advance(time.Second)
+		e.svc.runDue(ctx)
+		if p.hits.Load() != before+1 {
+			t.Fatalf("step %d: %d requests after %s, want 1", i, p.hits.Load()-before, delay)
+		}
+	}
+}
+
+// The scheduler right after a failed Start, still inside the first backoff,
+// sends nothing.
+func TestFailedStartNoImmediateScheduled(t *testing.T) {
+	p := newProvider(t, nodeA)
+	e := newEnv(t, nil)
+	sub := e.seed(t, p.URL+"/s", time.Hour)
+	e.clk.advance(5 * time.Hour) // due by LastGood
+	e.tun.up.Store(true)
+	e.tun.dial = (&net.Dialer{}).DialContext
+	p.hits.Store(0)
+	p.status.Store(500)
+	if _, err := e.svc.Update(context.Background(), sub.ID, Start); err == nil {
+		t.Fatal("want failure")
+	}
+	e.svc.runDue(context.Background())
+	if p.hits.Load() != 1 {
+		t.Fatalf("%d requests, want 1", p.hits.Load())
+	}
+}
+
+// Item 8: a canceled scheduled update is not a failure: no backoff growth,
+// no failure log, and the code is "canceled".
+func TestCanceledScheduledUpdateNoBackoff(t *testing.T) {
+	release := make(chan struct{})
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) > 1 {
+			<-release
+		}
+		_, _ = w.Write([]byte(nodeA))
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	var logs atomic.Int32
+	e := newEnv(t, func(d *Deps) { d.Logf = func(string, ...any) { logs.Add(1) } })
+	sub := e.seed(t, srv.URL+"/s", time.Hour)
+	e.tun.up.Store(true)
+	e.tun.dial = (&net.Dialer{}).DialContext
+	e.clk.advance(time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.svc.runDue(ctx); close(done) }()
+	for hits.Load() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if logs.Load() != 0 {
+		t.Fatalf("canceled update logged %d lines", logs.Load())
+	}
+	e.svc.mu.Lock()
+	b := e.svc.sched[sub.ID]
+	e.svc.mu.Unlock()
+	if b != nil {
+		t.Fatalf("canceled update changed the backoff: %+v", *b)
+	}
+	cctx, ccancel := context.WithCancel(context.Background())
+	ccancel()
+	_, err := e.svc.Update(cctx, sub.ID, User)
+	var se *Error
+	if !errors.As(err, &se) || se.Code != CodeCanceled {
+		t.Fatalf("canceled Update = %v, want code %s", err, CodeCanceled)
+	}
+}

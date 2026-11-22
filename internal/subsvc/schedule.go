@@ -118,6 +118,10 @@ func (s *Service) runDue(ctx context.Context) {
 			continue
 		}
 		if _, err := s.Update(ctx, sub.ID, Scheduled); err != nil {
+			if ctx.Err() != nil {
+				// Shutting down: not a failure of the subscription.
+				return
+			}
 			if codeOf(err) == CodeNotFound || codeOf(err) == CodeNoTunnel {
 				continue
 			}

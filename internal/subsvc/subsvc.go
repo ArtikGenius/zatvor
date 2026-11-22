@@ -38,6 +38,7 @@ const (
 	CodeNotFound         = "not_found"
 	CodeInvalidURL       = "invalid_url"
 	CodeStore            = "store"
+	CodeCanceled         = "canceled"
 )
 
 // Error is the typed error of every Service method.
@@ -202,7 +203,7 @@ func (s *Service) Update(ctx context.Context, id string, trig Trigger) (profile.
 	})
 	select {
 	case <-ctx.Done():
-		return profile.Diff{}, fail(CodeNetwork, "the update was canceled")
+		return profile.Diff{}, fail(CodeCanceled, "the update was canceled")
 	case out := <-ch:
 		r := out.Val.(flightResult)
 		return r.diff, r.err
@@ -226,14 +227,18 @@ func (s *Service) update(ctx context.Context, id string, trig Trigger) (profile.
 		return profile.Diff{}, fail(CodeNotFound, "no such subscription")
 	}
 	if trig == Start {
-		// Record the attempt: the scheduler must not fire a second request
-		// right after it (a failed Start is not retried before the interval).
-		s.mu.Lock()
-		s.sched[id] = &backoff{next: s.d.Clock.Now().Add(interval(old.Info.UpdateInterval))}
-		s.mu.Unlock()
+		// Hold the scheduler off while the start-up request is in flight, so
+		// it does not send a second one beside it.
+		s.startBackoff(id)
 	}
 	next, diff, ferr := s.fetchApply(ctx, *old, trig)
 	if ferr != nil {
+		if trig == Start {
+			// A failed start-up refresh is not retried directly; the
+			// scheduler retries it through the tunnel after the first
+			// backoff step, then 2, 4, 8... minutes (spec 5.6).
+			s.startBackoff(id)
+		}
 		s.events.publish(Event{Kind: Failed, ID: id, Code: codeOf(ferr)})
 		return profile.Diff{}, ferr
 	}
@@ -266,6 +271,13 @@ func (s *Service) update(ctx context.Context, id string, trig Trigger) (profile.
 	delete(s.sched, id)
 	s.events.publish(Event{Kind: Updated, ID: id, Diff: diff})
 	return diff, nil
+}
+
+// startBackoff puts id at the first backoff step from now.
+func (s *Service) startBackoff(id string) {
+	s.mu.Lock()
+	s.sched[id] = &backoff{delay: firstBackoff, next: s.d.Clock.Now().Add(firstBackoff)}
+	s.mu.Unlock()
 }
 
 func codeOf(err error) string {
